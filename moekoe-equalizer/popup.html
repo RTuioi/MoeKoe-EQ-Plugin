@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoeKoe EQ 均衡器</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: rgba(30, 30, 30, 0.98);
+            color: #fff;
+            width: 360px;
+            min-height: 300px;
+        }
+
+        .popup-container {
+            padding: 16px;
+        }
+
+        .popup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .popup-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .popup-title svg {
+            width: 24px;
+            height: 24px;
+            fill: #4facfe;
+        }
+
+        .eq-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .eq-toggle-label {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .eq-switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .eq-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .eq-slider-switch {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.2);
+            transition: 0.3s;
+            border-radius: 24px;
+        }
+
+        .eq-slider-switch:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked + .eq-slider-switch {
+            background-color: #4facfe;
+        }
+
+        input:checked + .eq-slider-switch:before {
+            transform: translateX(20px);
+        }
+
+        .status-section {
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin-bottom: 16px;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .status-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .status-label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .status-value {
+            font-size: 12px;
+            font-weight: 600;
+            color: #4facfe;
+        }
+
+        .status-value.success {
+            color: #2ecc71;
+        }
+
+        .status-value.warning {
+            color: #f1c40f;
+        }
+
+        .actions-section {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .action-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .action-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: #4facfe;
+            color: #fff;
+        }
+
+        .action-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .plugin-control-section {
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin-bottom: 16px;
+        }
+
+        .plugin-control-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .plugin-control-label {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .plugin-control-desc {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+            margin-top: 4px;
+        }
+
+        .popup-footer {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+        }
+
+        .poem-text {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.85);
+            line-height: 2;
+            margin-bottom: 12px;
+            font-family: 'STKaiti', 'KaiTi', 'SimKaiti', 'Microsoft YaHei', serif;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+            letter-spacing: 0.5px;
+        }
+
+        .version-text {
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .loading-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-top-color: #4facfe;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-box {
+            background: rgba(40, 40, 40, 0.98);
+            border-radius: 12px;
+            padding: 20px;
+            min-width: 280px;
+            max-width: 320px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            animation: modalSlideIn 0.2s ease-out;
+        }
+
+        @keyframes modalSlideIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .modal-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 12px;
+        }
+
+        .modal-message {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .modal-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .modal-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .modal-btn.danger {
+            border-color: rgba(255, 80, 80, 0.5);
+            color: #ff6b6b;
+        }
+
+        .modal-btn.danger:hover {
+            background: rgba(255, 80, 80, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="popup-container">
+        <div class="popup-header">
+            <div class="popup-title">
+                <svg viewBox="0 0 24 24">
+                    <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
+                </svg>
+                <span>31段均衡器</span>
+            </div>
+            <div class="eq-toggle">
+                <span class="eq-toggle-label">EQ</span>
+                <label class="eq-switch">
+                    <input type="checkbox" id="eq-toggle-input">
+                    <span class="eq-slider-switch"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="status-section">
+            <div class="status-row">
+                <span class="status-label">状态</span>
+                <span class="status-value" id="status-mode">检测中...</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">当前预设</span>
+                <span class="status-value" id="status-preset">-</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">音效增强</span>
+                <span class="status-value" id="status-effects">-</span>
+            </div>
+        </div>
+
+        <div class="actions-section">
+            <button class="action-btn" id="reset-btn">
+                <svg viewBox="0 0 24 24">
+                    <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                </svg>
+                重置
+            </button>
+            <button class="action-btn" id="open-panel-btn">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                </svg>
+                打开面板
+            </button>
+            <button class="action-btn" id="close-panel-btn">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </svg>
+                关闭面板
+            </button>
+        </div>
+
+        <div class="plugin-control-section">
+            <div class="plugin-control-header">
+                <div>
+                    <div class="plugin-control-label">禁用插件</div>
+                    <div class="plugin-control-desc">完全禁用均衡器插件</div>
+                </div>
+                <div class="eq-toggle">
+                    <label class="eq-switch">
+                        <input type="checkbox" id="plugin-disable-input">
+                        <span class="eq-slider-switch"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="popup-footer">
+            <div class="poem-text">
+                且行且看且从容；<br>
+                且听且忘且随风。<br>
+                愿清幽花香常伴君，所行所遇皆温柔<br>
+                愿清风朗月常伴君，无扰无忧亦随风
+            </div>
+            <div class="version-text">
+                Moekoe EQ v1.0.0|31段参数均衡器
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
