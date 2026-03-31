@@ -18,16 +18,16 @@ MoeKoe EQ 是一款专为 MoeKoeMusic 音乐播放器设计的31 段参数均衡
 
 🏗️ 技术架构
 
-┌─────────────────────────────────────────────────────────┐
-│                    Chrome Extension                      │
-├─────────────────────────────────────────────────────────┤
-│  popup.html/js  ←→  background.js (Service Worker)      │
-│                           ↓                              │
-│  content.js (Content Script) ←→ inject.js (MAIN World)  │
-│           ↓                        ↓                     │
-│      Shadow DOM UI           Web Audio API              │
-│                               (BiquadFilter × 31)        │
-└─────────────────────────────────────────────────────────┘
+                                         ┌─────────────────────────────────────────────────────────┐
+                                         │                    Chrome Extension                      │
+                                         ├─────────────────────────────────────────────────────────┤
+                                         │  popup.html/js  ←→  background.js (Service Worker)      │
+                                         │                           ↓                              │
+                                         │  content.js (Content Script) ←→ inject.js (MAIN World)  │
+                                         │           ↓                        ↓                     │
+                                         │      Shadow DOM UI           Web Audio API              │
+                                         │                               (BiquadFilter × 31)        │
+                                         └─────────────────────────────────────────────────────────┘        
 
 ### 🔧 技术实现
 文件 职责 background.js 设置存储管理、消息路由、预设管理 content.js UI 界面渲染、用户交互、Shadow DOM 隔离 inject.js 音频处理核心、AudioContext 管理、EQ 链路构建 popup.js 弹出窗口控制、快捷操作
