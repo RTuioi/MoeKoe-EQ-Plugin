@@ -1,9 +1,13 @@
-# MoeKoe-EQ-Plugin
+
 MoeKoe EQ 是一款专为 MoeKoeMusic 音乐播放器设计的31 段参数均衡器 Chrome 扩展插件。提供专业的31段参数均衡器和的音效增强功能，让用户获得更好的音频体验。
 
+                    首先十分感谢“ 阿珏 ”开发的  MoeKoeMusic   项目,并且感谢他长久以来对项目的维护和优化。
 
 
-                                  🎵 MoeKoe EQ - 31段均衡器音效插件
+-------------------------------------------------
+                    
+
+                                                🎵 MoeKoe EQ - 31段均衡器音效插件
                                   
 
 ### 🎛️ 核心功能 1. 31段参数均衡器
@@ -59,3 +63,34 @@ MoeKoe EQ 是一款专为 MoeKoeMusic 音乐播放器设计的31 段参数均衡
 - 播放音频时自动激活
 
 -说明一下，这个是用 AI 写的插件，可能会出现一些 bug，是否使用需自行考量。
+
+
+
+
+
+
+
+                                                                    预览
+
+                                                                    
+
+
+<img width="1283" height="1064" alt="image" src="https://github.com/user-attachments/assets/60b8e41e-a668-4806-890a-8af9b6f845ae" />
+
+
+<img width="1283" height="1440" alt="image" src="https://github.com/user-attachments/assets/9235f10e-29db-4aaf-99ed-3d76579150f3" />
+
+
+<img width="777" height="172" alt="image" src="https://github.com/user-attachments/assets/5be9853d-2be6-46ff-b82c-a1c99d741fc8" />
+
+
+
+
+
+
+
+
+
+
+
+                                                                    
