@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{width:360px;background:#14141e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;}
+.header{padding:16px 20px;background:rgba(30,30,45,0.9);border-bottom:1px solid rgba(108,92,231,0.2);}
+.header h1{font-size:15px;color:#a29bfe;font-weight:600;}
+.header p{font-size:11px;color:rgba(255,255,255,0.4);margin-top:4px;}
+.section{padding:14px 20px;border-bottom:1px solid rgba(255,255,255,0.06);}
+.section-title{font-size:12px;font-weight:600;color:#a29bfe;margin-bottom:10px;}
+.row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.label{font-size:12px;color:rgba(255,255,255,0.6);}
+.btn{padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:500;transition:all 0.2s;}
+.btn-primary{background:linear-gradient(135deg,#6c5ce7,#a29bfe);color:#fff;}
+.btn-primary:hover{opacity:0.9;}
+.btn-danger{background:rgba(255,71,87,0.2);color:#ff4757;border:1px solid rgba(255,71,87,0.3);}
+.btn-danger:hover{background:rgba(255,71,87,0.3);}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#e0e0e0;border:1px solid rgba(255,255,255,0.15);}
+.btn-secondary:hover{background:rgba(255,255,255,0.15);}
+.btn-sm{padding:4px 10px;font-size:10px;}
+.toggle{position:relative;width:36px;height:20px;background:rgba(255,255,255,0.15);border-radius:10px;cursor:pointer;transition:all 0.3s;}
+.toggle.active{background:#6c5ce7;}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:all 0.3s;}
+.toggle.active::after{left:18px;}
+.status{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,0.5);}
+.status-dot{width:8px;height:8px;border-radius:50%;}
+.status-dot.on{background:#2ed573;}
+.status-dot.off{background:#ff4757;}
+.presets{display:flex;flex-wrap:wrap;gap:4px;}
+.preset-btn{padding:4px 10px;border:1px solid rgba(108,92,231,0.3);border-radius:4px;background:rgba(108,92,231,0.1);color:#a29bfe;cursor:pointer;font-size:10px;transition:all 0.2s;}
+.preset-btn:hover{background:rgba(108,92,231,0.2);}
+.preset-btn.active{background:rgba(108,92,231,0.3);border-color:#a29bfe;}
+.footer{padding:12px 20px;text-align:center;font-size:10px;color:rgba(255,255,255,0.3);}
+.poem{padding:10px 20px 14px;text-align:center;font-size:11px;color:rgba(162,155,254,0.5);line-height:1.8;letter-spacing:1px;}
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>31段均衡器 v2.0</h1>
+    <p>专业音频处理 · 频谱分析 · 动态EQ · M/S处理</p>
+</div>
+
+<div class="section">
+    <div class="row">
+        <span class="label">EQ状态</span>
+        <div class="status"><span class="status-dot" id="status-dot"></span><span id="status-text">等待连接</span></div>
+    </div>
+    <div class="row">
+        <span class="label">EQ开关</span>
+        <div class="toggle" id="eq-toggle"></div>
+    </div>
+    <div class="row">
+        <span class="label">音效开关</span>
+        <div class="toggle" id="effects-toggle"></div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-title">快捷预设</div>
+    <div class="presets" id="presets-container"></div>
+</div>
+
+<div class="section">
+    <div class="section-title">操作</div>
+    <div class="row">
+        <span class="label">打开EQ面板</span>
+        <button class="btn btn-primary btn-sm" id="open-panel-btn">打开面板</button>
+    </div>
+    <div class="row">
+        <span class="label">重置EQ</span>
+        <button class="btn btn-secondary btn-sm" id="reset-eq-btn">重置</button>
+    </div>
+    <div class="row">
+        <span class="label">重置全部</span>
+        <button class="btn btn-danger btn-sm" id="reset-all-btn">重置全部</button>
+    </div>
+</div>
+
+<div class="footer">MoeKoe EQ Plugin v2.0.0 · 且随风</div>
+
+<div class="poem">
+且行且看且从容；<br>
+且听且忘且随风。<br>
+愿清幽花香常伴君，所行所遇皆温柔<br>
+愿清风朗月常伴君，无扰无忧亦随风
+</div>
+
+<script src="shared/constants.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
