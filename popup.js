@@ -3,16 +3,19 @@
 
     var currentSettings = null;
 
-    function sendToActiveTab(message) {
-        chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-            if (tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, message, function() {
-                    if (chrome.runtime.lastError) {
-                        console.warn('[MoeKoeEQ-POPUP] sendToActiveTab:', chrome.runtime.lastError.message);
-                    }
-                });
-            }
-        });
+    // 通过 background 转发消息到所有 content tab，避免在 Electron 独立 BrowserWindow 中
+    function sendViaBackground(message, callback) {
+        try {
+            chrome.runtime.sendMessage(message, function(response) {
+                if (chrome.runtime.lastError) {
+                    console.warn('[MoeKoeEQ-POPUP] sendViaBackground:', chrome.runtime.lastError.message);
+                }
+                if (callback) callback(response);
+            });
+        } catch (e) {
+            console.warn('[MoeKoeEQ-POPUP] sendViaBackground exception:', e);
+            if (callback) callback(null);
+        }
     }
 
     function updateUI() {
@@ -92,15 +95,7 @@
     });
 
     document.getElementById('open-panel-btn').addEventListener('click', function() {
-        chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-            if (tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, { action: 'open-panel' }, function() {
-                    if (chrome.runtime.lastError) {
-                        console.warn('[MoeKoeEQ-POPUP] open-panel:', chrome.runtime.lastError.message);
-                    }
-                });
-            }
-        });
+        sendViaBackground({ action: 'open-panel' });
     });
 
     function showConfirmDialog(message, callback) {
