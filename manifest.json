@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "31段均衡器音效插件",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "description": "31段均衡器插件-为MoeKoeMusic提供音频处理-（首次安装-请点击托盘-MoeKoeMusic-再点击重启应用-重启完成之后即可正常使用）",
   "plugin_id": "moekoe-equalizer",
   "minversion": "1.6.0",
