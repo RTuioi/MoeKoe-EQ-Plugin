@@ -1,3 +1,6 @@
+// === FALLBACK 常量 ===
+// 注：完整定义见 shared/constants.js。修改 shared/constants.js 时务必同步更新此处的 fallback，
+// 并同步更新 content.js 和 inject.js 中的 fallback 块。
 try { importScripts('shared/constants.js'); } catch (e) {
     console.warn('[MoeKoeEQ-BG] importScripts failed, using inline constants');
     var EQ_FREQUENCIES = [20,25,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,1250,1600,2000,2500,3150,4000,5000,6300,8000,10000,12500,16000,20000];
@@ -5,7 +8,10 @@ try { importScripts('shared/constants.js'); } catch (e) {
     var AUDIO_EFFECTS_DEFAULT = {bassBoost:0,dynamicBass:0,warmth:0,vocalEnhance:0,presence:0,clarity:0,trebleBoost:0,dynamicEnhance:0,ambiance:0,surround:0,reverb:0,outputGain:50,stereoBalance:50,loudnessCompensation:0,harmonicExciter:0,crossfeed:0,subHarmonic:0,tubeSaturation:0,multibandComp:0,deEsser:0,stereoWidener:0,tapeEmulation:0,loudnessMaximizer:0};
     var DYNAMIC_EQ_DEFAULT = {enabled:false,threshold:-30,ratio:6,attack:0.02,release:0.15};
     var LIMITER_DEFAULT = {threshold:-3,knee:10,ratio:8,attack:0.005,release:0.5};
-    var DEFAULT_SETTINGS = {enabled:true,gains:Array(31).fill(0),qValues:Array(31).fill(1.4),preset:'flat',pluginDisabled:false,effects:null,effectsEnabled:true,channelMode:'stereo',leftGains:Array(31).fill(0),rightGains:Array(31).fill(0),leftQValues:Array(31).fill(1.4),rightQValues:Array(31).fill(1.4),dynamicEQ:null,midSideEnabled:false,midGains:Array(31).fill(0),sideGains:Array(31).fill(0),linearPhaseEnabled:false,referenceProfile:null};
+    var DC_FILTER_DEFAULT = {enabled:true,cutoffFreq:20,Q:0.707};
+    var TRUE_PEAK_LIMITER_DEFAULT = {enabled:true,threshold:-1.0,ceiling:-0.5,release:0.1,oversample:4};
+    var DITHER_DEFAULT = {enabled:false,targetBits:16,noiseShaping:true};
+    var DEFAULT_SETTINGS = {enabled:true,gains:Array(31).fill(0),qValues:Array(31).fill(1.4),preset:'flat',pluginDisabled:false,effects:null,effectsEnabled:true,channelMode:'stereo',leftGains:Array(31).fill(0),rightGains:Array(31).fill(0),leftQValues:Array(31).fill(1.4),rightQValues:Array(31).fill(1.4),dynamicEQ:null,midSideEnabled:false,midGains:Array(31).fill(0),sideGains:Array(31).fill(0),linearPhaseEnabled:false,referenceProfile:null,dcFilter:null,dither:null,truePeakLimiter:null};
     var MSG_SRC = {CONTENT:'__moekoe_eq_content__',MAIN:'__moekoe_eq_main__',BACKGROUND:'__moekoe_eq_background__',POPUP:'__moekoe_eq_popup__'};
     var STORAGE_KEYS = {SETTINGS:'eqSettings',CUSTOM_PRESETS:'eqCustomPresets'};
     var Q_VALUE_DEFAULT = 1.4;
@@ -19,6 +25,9 @@ function buildDefaultSettings() {
             if (k === 'effects') s[k] = Object.assign({}, AUDIO_EFFECTS_DEFAULT);
             else if (k === 'dynamicEQ') s[k] = Object.assign({}, DYNAMIC_EQ_DEFAULT);
             else if (k === 'referenceProfile') s[k] = null;
+            else if (k === 'dcFilter') s[k] = Object.assign({}, DC_FILTER_DEFAULT);
+            else if (k === 'dither') s[k] = Object.assign({}, DITHER_DEFAULT);
+            else if (k === 'truePeakLimiter') s[k] = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT);
             else s[k] = DEFAULT_SETTINGS[k];
         } else if (Array.isArray(DEFAULT_SETTINGS[k])) {
             s[k] = DEFAULT_SETTINGS[k].slice();
@@ -56,6 +65,9 @@ async function getSettings() {
         def.sideGains = Array.isArray(settings.sideGains) && settings.sideGains.length === 31 ? settings.sideGains : def.sideGains;
         def.linearPhaseEnabled = settings.linearPhaseEnabled || false;
         def.referenceProfile = settings.referenceProfile || null;
+        def.dcFilter = settings.dcFilter ? Object.assign({}, DC_FILTER_DEFAULT, settings.dcFilter) : Object.assign({}, DC_FILTER_DEFAULT);
+        def.dither = settings.dither ? Object.assign({}, DITHER_DEFAULT, settings.dither) : Object.assign({}, DITHER_DEFAULT);
+        def.truePeakLimiter = settings.truePeakLimiter ? Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, settings.truePeakLimiter) : Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT);
 
         var presetsResult = await chrome.storage.local.get(STORAGE_KEYS.CUSTOM_PRESETS);
         def.customPresets = presetsResult[STORAGE_KEYS.CUSTOM_PRESETS] || [];
@@ -228,6 +240,11 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
 
                 case 'get-presets':
                     return { success: true, presets: EQ_PRESETS };
+
+                case 'open-panel':
+                    // 由 popup 发起，转发到所有 content tab（Electron 独立窗口中无法直接 tabs.query currentWindow）
+                    await broadcastMessage({ source: MSG_SRC.BACKGROUND, type: 'open-panel' });
+                    return { success: true };
 
                 case 'get-frequencies':
                     return { success: true, frequencies: EQ_FREQUENCIES };
