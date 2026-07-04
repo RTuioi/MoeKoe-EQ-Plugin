@@ -192,6 +192,54 @@ var LIMITER_DEFAULT = {
     release: 0.5
 };
 
+// DC 偏移过滤（始终启用，开销极小）
+var DC_FILTER_DEFAULT = {
+    enabled: true,
+    cutoffFreq: 20,
+    Q: 0.707
+};
+
+// 真峰值限幅器（4× 过采样）
+var TRUE_PEAK_LIMITER_DEFAULT = {
+    enabled: true,
+    threshold: -1.0,    // dBFS，目标真峰值
+    ceiling: -0.5,      // dBFS，输出上限
+    release: 0.1,      // s
+    oversample: 4       // 2 或 4
+};
+
+// 位深抖动
+var DITHER_DEFAULT = {
+    enabled: false,
+    targetBits: 16,    // 16 or 24
+    noiseShaping: true
+};
+
+// 真正的多段压缩（4 段 LR4 交叉）
+var MULTIBAND_COMPRESSOR_PRO_DEFAULT = {
+    enabled: false,
+    bands: [
+        { freqMax: 150,   threshold: -20, ratio: 3, attack: 0.010, release: 0.150, makeup: 1.0, knee: 6 },
+        { freqMax: 1500,  threshold: -20, ratio: 3, attack: 0.005, release: 0.100, makeup: 1.0, knee: 6 },
+        { freqMax: 6000,  threshold: -20, ratio: 3, attack: 0.003, release: 0.080, makeup: 1.0, knee: 6 },
+        { freqMax: 24000, threshold: -20, ratio: 3, attack: 0.001, release: 0.050, makeup: 1.0, knee: 6 }
+    ]
+};
+
+// 自动 EQ 增强
+var AUTO_EQ_DEFAULT = {
+    targetCurve: 'custom',  // 'harman', 'diffuse', 'flat', 'custom'
+    smoothing: 3,            // 1-7 平滑窗口
+    perceptualWeighting: true,
+    loudnessNormalize: true,
+    maxGainDB: 6,            // 单段最大增益
+    matchIterations: 1       // 1-3 次迭代
+};
+
+// 分享码
+var SHARE_CODE_VERSION = '2.0';
+var SHARE_CODE_PREFIX = 'MEQ:';
+
 var DEFAULT_SETTINGS = {
     enabled: true,
     gains: Array(31).fill(0),
@@ -210,7 +258,10 @@ var DEFAULT_SETTINGS = {
     midGains: Array(31).fill(0),
     sideGains: Array(31).fill(0),
     linearPhaseEnabled: false,
-    referenceProfile: null
+    referenceProfile: null,
+    dcFilter: null,
+    dither: null,
+    truePeakLimiter: null
 };
 
 var MSG_SRC = {
@@ -301,3 +352,7 @@ var EFFECTS_INFO = {
     outputGain: { name: '输出增益', max: 100, desc: '调节输出音量大小' },
     stereoBalance: { name: '声道平衡', max: 100, desc: '调节左右声道平衡，50为居中' }
 };
+
+// 常量版本标记：修改本文件时务必同步更新 background.js / content.js / inject.js 的 fallback
+var MOEKOE_CONSTANTS_VERSION = '2.0.3';
+if (typeof window !== 'undefined') window.__MOEKOE_CONSTANTS_VERSION__ = MOEKOE_CONSTANTS_VERSION;
