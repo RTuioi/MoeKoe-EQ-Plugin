@@ -1284,6 +1284,8 @@ if (externalGainNode) {
                     _selfCreatedAudioContext = false;
                 }
                 console.warn('[MoeKoeEQ-MAIN] createMediaElementSource failed, element already connected');
+                // 监听 src 变化（切歌），失败标记过期后自动重试
+                watchAudioElementSrc();
                 return;
             }
             _isFallbackConnect = false;
@@ -1363,8 +1365,14 @@ try {
                 dynamicEQFrameId = null;
                 return;
             }
-            if (audioContext.state === 'closed' || audioContext.state === 'suspended') {
+            if (audioContext.state === 'closed') {
                 dynamicEQFrameId = null;
+                return;
+            }
+            if (audioContext.state === 'suspended') {
+                dynamicEQFrameId = null;
+                // 尝试恢复 AudioContext，恢复后由 watchAudioContextState 重启 loop
+                try { audioContext.resume().catch(function() {}); } catch (e) {}
                 return;
             }
             try {
@@ -2428,8 +2436,9 @@ var t = audioContext.currentTime;
         if (_idleGuardTimer) { clearTimeout(_idleGuardTimer); _idleGuardTimer = null; }
 
         try {
-            if (audioContext) {
-                audioContext.onstatechange = null;
+            if (audioContext && _onAcStateChange) {
+                audioContext.removeEventListener('statechange', _onAcStateChange);
+                _onAcStateChange = null;
             }
         } catch (e) {}
 
@@ -2749,18 +2758,36 @@ matchReferenceProfile(); break;
         if (document.hidden && dynamicEQConfig.enabled) {
             stopDynamicEQLoop();
         } else if (!document.hidden && dynamicEQConfig.enabled && isInitialized) {
+            // 后台返回前台时，AudioContext 可能处于 suspended 状态，先尝试 resume
+            if (audioContext && audioContext.state === 'suspended') {
+                try { audioContext.resume().catch(function() {}); } catch (e) {}
+            }
             startDynamicEQLoop();
         }
     }
 
     var _acStateChangeTimer = null;
     var _audioSrcObserver = null;
+    var _onAcStateChange = null;
 
     function watchAudioElementSrc() {
         if (!capturedAudioElement || _audioSrcObserver) return;
         try {
             _audioSrcObserver = new MutationObserver(function(mutations) {
-                if (!isInitialized || isDestroyed) return;
+                if (isDestroyed) return;
+                // 初始化失败后 src 变化（切歌），失败标记过期则重试
+                if (!isInitialized) {
+                    for (var m = 0; m < mutations.length; m++) {
+                        if (mutations[m].type === 'attributes' && mutations[m].attributeName === 'src') {
+                            if (capturedAudioElement && !hasFailedAudioElement(capturedAudioElement)) {
+                                console.log('[MoeKoeEQ-MAIN] Audio src changed after init failure, retrying fallbackConnect');
+                                setTimeout(function() { fallbackConnect(capturedAudioElement); }, 200);
+                            }
+                            return;
+                        }
+                    }
+                    return;
+                }
                 for (var m = 0; m < mutations.length; m++) {
                     if (mutations[m].type === 'attributes' && mutations[m].attributeName === 'src') {
                         console.log('[MoeKoeEQ-MAIN] Audio element src changed, re-verifying connection');
@@ -2778,7 +2805,11 @@ matchReferenceProfile(); break;
     function watchAudioContextState() {
         if (!audioContext) return;
         try {
-            audioContext.onstatechange = async function() {
+            // 移除旧监听器，避免重复绑定
+            if (_onAcStateChange) {
+                try { audioContext.removeEventListener('statechange', _onAcStateChange); } catch (e) {}
+            }
+            _onAcStateChange = async function() {
                 console.log('[MoeKoeEQ-MAIN] AudioContext state changed to:', audioContext.state);
 
                 if (audioContext.state === 'suspended') {
@@ -2812,6 +2843,7 @@ matchReferenceProfile(); break;
                     isInitializing = false;
                 }
             };
+            audioContext.addEventListener('statechange', _onAcStateChange);
         } catch (e) {
             console.warn('[MoeKoeEQ-MAIN] watchAudioContextState error:', e);
         }
