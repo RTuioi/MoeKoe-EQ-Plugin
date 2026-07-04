@@ -20,7 +20,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["shared/constants.js", "content.js"],
+      "js": ["shared/constants.js", "shared/lzstring.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
