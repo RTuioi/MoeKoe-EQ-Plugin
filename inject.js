@@ -14,13 +14,23 @@
 
     var _msgTargetOrigin = window.location.origin || '*';
 
+    // === FALLBACK 常量 ===
+    // 注意：完整定义见 shared/constants.js。修改 shared/constants.js 时务必同步更新此处的 fallback，
+    // 并同步更新 background.js 和 content.js 中的 fallback 块。
     if (typeof EQ_FREQUENCIES === 'undefined') {
         window.EQ_FREQUENCIES = [20,25,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,1250,1600,2000,2500,3150,4000,5000,6300,8000,10000,12500,16000,20000];
         window.EQ_PRESETS = { flat:{name:'平坦',gains:Array(31).fill(0)} };
         window.AUDIO_EFFECTS_DEFAULT = {bassBoost:0,dynamicBass:0,warmth:0,vocalEnhance:0,presence:0,clarity:0,trebleBoost:0,dynamicEnhance:0,ambiance:0,surround:0,reverb:0,outputGain:50,stereoBalance:50,loudnessCompensation:0,harmonicExciter:0,crossfeed:0,subHarmonic:0,tubeSaturation:0,multibandComp:0,deEsser:0,stereoWidener:0,tapeEmulation:0,loudnessMaximizer:0};
         window.DYNAMIC_EQ_DEFAULT = {enabled:false,threshold:-30,ratio:6,attack:0.02,release:0.15};
         window.LIMITER_DEFAULT = {threshold:-3,knee:10,ratio:8,attack:0.005,release:0.5};
-        window.DEFAULT_SETTINGS = {enabled:true,gains:Array(31).fill(0),qValues:Array(31).fill(1.4),preset:'flat',pluginDisabled:false,effects:null,effectsEnabled:true,channelMode:'stereo',leftGains:Array(31).fill(0),rightGains:Array(31).fill(0),leftQValues:Array(31).fill(1.4),rightQValues:Array(31).fill(1.4),dynamicEQ:null,midSideEnabled:false,midGains:Array(31).fill(0),sideGains:Array(31).fill(0),linearPhaseEnabled:false,referenceProfile:null};
+        window.DC_FILTER_DEFAULT = {enabled:true,cutoffFreq:20,Q:0.707};
+        window.TRUE_PEAK_LIMITER_DEFAULT = {enabled:true,threshold:-1.0,ceiling:-0.5,release:0.1,oversample:4};
+        window.DITHER_DEFAULT = {enabled:false,targetBits:16,noiseShaping:true};
+        window.MULTIBAND_COMPRESSOR_PRO_DEFAULT = {enabled:false,bands:[{freqMax:150,threshold:-20,ratio:3,attack:0.010,release:0.150,makeup:1.0,knee:6},{freqMax:1500,threshold:-20,ratio:3,attack:0.005,release:0.100,makeup:1.0,knee:6},{freqMax:6000,threshold:-20,ratio:3,attack:0.003,release:0.080,makeup:1.0,knee:6},{freqMax:24000,threshold:-20,ratio:3,attack:0.001,release:0.050,makeup:1.0,knee:6}]};
+        window.AUTO_EQ_DEFAULT = {targetCurve:'custom',smoothing:3,perceptualWeighting:true,loudnessNormalize:true,maxGainDB:6,matchIterations:1};
+        window.SHARE_CODE_VERSION = '2.0';
+        window.SHARE_CODE_PREFIX = 'MEQ:';
+        window.DEFAULT_SETTINGS = {enabled:true,gains:Array(31).fill(0),qValues:Array(31).fill(1.4),preset:'flat',pluginDisabled:false,effects:null,effectsEnabled:true,channelMode:'stereo',leftGains:Array(31).fill(0),rightGains:Array(31).fill(0),leftQValues:Array(31).fill(1.4),rightQValues:Array(31).fill(1.4),dynamicEQ:null,midSideEnabled:false,midGains:Array(31).fill(0),sideGains:Array(31).fill(0),linearPhaseEnabled:false,referenceProfile:null,dcFilter:null,dither:null,truePeakLimiter:null};
         window.MSG_SRC = {CONTENT:'__moekoe_eq_content__',MAIN:'__moekoe_eq_main__',BACKGROUND:'__moekoe_eq_background__',POPUP:'__moekoe_eq_popup__'};
         window.Q_VALUE_MIN = 0.1; window.Q_VALUE_MAX = 18.0; window.Q_VALUE_DEFAULT = 1.4; window.Q_VALUE_STEP = 0.1;
         window.GAIN_MIN = -6; window.GAIN_MAX = 6; window.GAIN_STEP = 0.5;
@@ -69,6 +79,13 @@
     var sideGains = Array(31).fill(0);
     var linearPhaseEnabled = false;
     var referenceProfile = null;
+
+    // === 新增功能配置 ===
+    var dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT);
+    var truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT);
+    var ditherConfig = Object.assign({}, DITHER_DEFAULT);
+    var multibandCompProConfig = Object.assign({}, MULTIBAND_COMPRESSOR_PRO_DEFAULT);
+    var autoEQConfig = Object.assign({}, AUTO_EQ_DEFAULT);
 
     var eqNodes = new Array(31).fill(null);
     var leftEQNodes = new Array(31).fill(null);
@@ -143,6 +160,20 @@
     var spectrumData = null;
     var spectrumOutputData = null;
 
+    // === 新增功能节点 ===
+    var dcFilterNode = null;             // DC 偏移过滤
+    var truePeakOversampler = null;     // 真峰值过采样
+    var truePeakCompressor = null;       // 真峰值限幅器
+    var truePeakCeilingGain = null;      // 输出 ceiling
+    var ditherShaperL = null;            // Dither 左声道
+    var ditherShaperR = null;            // Dither 右声道
+    var ditherSplitter = null;
+    var ditherMerger = null;
+    var ditherNoiseSource = null;        // Dither 噪声源（TPDF）
+    var ditherNoiseGainL = null;          // Dither 左声道噪声增益
+    var ditherNoiseGainR = null;          // Dither 右声道噪声增益
+    var multibandProNodes = null;        // 多段压缩 pro 节点对象
+
     var dynamicEQAnalyser = null;
     var dynamicEQGainNodes = new Array(31).fill(null);
     var dynamicEQFrameId = null;
@@ -176,6 +207,69 @@
         f.Q.value = q;
         f.gain.value = gain;
         return f;
+    }
+
+    // === Dither 辅助函数 ===
+    // 生成 TPDF（三角概率密度函数）噪声缓冲区
+    function createDitherNoiseBuffer(bits) {
+        var sampleRate = audioContext.sampleRate;
+        var len = sampleRate * 2; // 2 秒噪声，循环播放
+        var buf = audioContext.createBuffer(2, len, sampleRate);
+        var lsb = 1 / Math.pow(2, bits - 1); // 1 LSB 对应的振幅
+        for (var ch = 0; ch < 2; ch++) {
+            var data = buf.getChannelData(ch);
+            for (var i = 0; i < len; i++) {
+                // TPDF：两个均匀分布随机数之差，振幅范围 ±1 LSB
+                var r1 = Math.random() * 2 - 1;
+                var r2 = Math.random() * 2 - 1;
+                data[i] = (r1 + r2) * lsb * 0.5;
+            }
+        }
+        return buf;
+    }
+
+    // 生成量化曲线（WaveShaper 用于位深量化）
+    function createDitherCurve(bits, noiseShaping) {
+        var size = 65536;
+        var curve = new Float32Array(size);
+        var steps = Math.pow(2, bits) - 1;
+        var halfSteps = steps / 2;
+        for (var i = 0; i < size; i++) {
+            var x = (i / (size - 1)) * 2 - 1; // -1..1
+            var q = Math.round(x * halfSteps) / halfSteps;
+            // noiseShaping：轻微高频削减以模拟噪声整形效果
+            if (noiseShaping) {
+                q = q * 0.9999 + x * 0.0001;
+            }
+            curve[i] = q;
+        }
+        return curve;
+    }
+
+    // === 真峰值限幅器辅助函数 ===
+    // 生成软限幅曲线（WaveShaper 用于真峰值限幅，配合 oversample 使用）
+    function createTruePeakCurve(thresholdDB, ceilingDB) {
+        var size = 65536;
+        var curve = new Float32Array(size);
+        var threshold = Math.pow(10, thresholdDB / 20);
+        var ceiling = Math.pow(10, ceilingDB / 20);
+        var range = 1 - threshold;
+        for (var i = 0; i < size; i++) {
+            var x = (i / (size - 1)) * 2 - 1; // -1..1
+            var absX = Math.abs(x);
+            var sign = x < 0 ? -1 : 1;
+            if (absX <= threshold) {
+                // 线性区域
+                curve[i] = x;
+            } else {
+                // 阈值以上：软饱和过渡到 ceiling
+                var t = (absX - threshold) / range;
+                if (t > 1) t = 1;
+                var shaped = threshold + (ceiling - threshold) * (1 - Math.exp(-3 * t));
+                curve[i] = sign * Math.min(shaped, ceiling);
+            }
+        }
+        return curve;
     }
 
     function createEQChain(nodes, gains, qValues) {
@@ -221,6 +315,15 @@ eqInputNode = audioContext.createGain();
         eqChainGain.gain.value = 1.0;
         eqBypassGain = audioContext.createGain();
         eqBypassGain.gain.value = 0.0;
+
+        // DC 偏移过滤：始终创建节点，由 applyDCFilterConfig 根据 enabled 决定参数
+        if (!dcFilterNode) {
+            dcFilterNode = audioContext.createBiquadFilter();
+            dcFilterNode.type = 'highpass';
+            dcFilterNode.frequency.value = dcFilterConfig.cutoffFreq || DC_FILTER_DEFAULT.cutoffFreq;
+            dcFilterNode.Q.value = dcFilterConfig.Q || DC_FILTER_DEFAULT.Q;
+            applyDCFilterConfig();
+        }
 
         channelSplitter = audioContext.createChannelSplitter(2);
         channelMerger = audioContext.createChannelMerger(2);
@@ -840,8 +943,63 @@ try {
 
             N.effectsBypassGain.connect(N.outputGainNode);
             N.outputGainNode.connect(N.limiter);
-            N.limiter.connect(N.stereoPanner);
-            N.stereoPanner.connect(audioContext.destination);
+
+            // === 真峰值限幅器链路：limiter → truePeakOversampler → truePeakCompressor → truePeakCeilingGain → stereoPanner ===
+            truePeakOversampler = audioContext.createWaveShaper();
+            truePeakCompressor = audioContext.createDynamicsCompressor();
+            truePeakCeilingGain = audioContext.createGain();
+            // 初始配置：默认启用
+            truePeakOversampler.oversample = '4x';
+            truePeakOversampler.curve = null; // 由 applyTruePeakConfig 设置
+            truePeakCompressor.threshold.value = TRUE_PEAK_LIMITER_DEFAULT.threshold;
+            truePeakCompressor.knee.value = 0;
+            truePeakCompressor.ratio.value = 1000; // 硬限幅
+            truePeakCompressor.attack.value = 0.001;
+            truePeakCompressor.release.value = TRUE_PEAK_LIMITER_DEFAULT.release;
+            truePeakCeilingGain.gain.value = 1.0;
+            N.limiter.connect(truePeakOversampler);
+            truePeakOversampler.connect(truePeakCompressor);
+            truePeakCompressor.connect(truePeakCeilingGain);
+            truePeakCeilingGain.connect(N.stereoPanner);
+            // 应用初始配置
+            applyTruePeakConfig();
+
+            // === Dither 链路：stereoPanner → ditherSplitter → ditherShaperL/R → ditherMerger → destination ===
+            ditherSplitter = audioContext.createChannelSplitter(2);
+            ditherMerger = audioContext.createChannelMerger(2);
+            ditherShaperL = audioContext.createWaveShaper();
+            ditherShaperR = audioContext.createWaveShaper();
+            ditherNoiseGainL = audioContext.createGain();
+            ditherNoiseGainR = audioContext.createGain();
+            // 初始化为旁通状态（dither 默认关闭）
+            ditherShaperL.curve = null;
+            ditherShaperR.curve = null;
+            ditherShaperL.oversample = 'none';
+            ditherShaperR.oversample = 'none';
+            ditherNoiseGainL.gain.value = 0;
+            ditherNoiseGainR.gain.value = 0;
+            // 创建噪声源（始终运行，通过 gain 控制开关）
+            try {
+                ditherNoiseSource = audioContext.createBufferSource();
+                ditherNoiseSource.buffer = createDitherNoiseBuffer(ditherConfig.targetBits);
+                ditherNoiseSource.loop = true;
+                ditherNoiseSource.start(0);
+                ditherNoiseSource.connect(ditherNoiseGainL);
+                ditherNoiseSource.connect(ditherNoiseGainR);
+            } catch (e) {
+                console.warn('[MoeKoeEQ-MAIN] Dither noise source init failed:', e);
+            }
+            // 连接 dither 链路
+            N.stereoPanner.connect(ditherSplitter);
+            ditherSplitter.connect(ditherShaperL, 0);
+            ditherSplitter.connect(ditherShaperR, 1);
+            ditherNoiseGainL.connect(ditherShaperL);
+            ditherNoiseGainR.connect(ditherShaperR);
+            ditherShaperL.connect(ditherMerger, 0, 0);
+            ditherShaperR.connect(ditherMerger, 0, 1);
+            ditherMerger.connect(audioContext.destination);
+            // 应用初始 dither 配置
+            applyDitherConfig();
 
             try {
                 N.reverbConvolver.buffer = createReverbImpulse();
@@ -1019,7 +1177,32 @@ var OrigAudioContext = window.AudioContext || window.webkitAudioContext;
         var origCreateMES = OrigAudioContext.prototype.createMediaElementSource;
 
         OrigAudioContext.prototype.createMediaElementSource = function(audioElement) {
-            var sourceNode = origCreateMES.call(this, audioElement);
+            var sourceNode;
+            // 检测 audio 元素是否已被插件接管（fallbackConnect 已调用过 createMediaElementSource）
+            var alreadyCaptured = (capturedAudioElement === audioElement && isInitialized);
+            try {
+                sourceNode = origCreateMES.call(this, audioElement);
+            } catch (e) {
+                if (alreadyCaptured) {
+                    // audio 已被 EQ 插件接管，主程序（如响度规格化）再次调用会抛 InvalidStateError
+                    // 返回哑 GainNode 避免主程序崩溃，并通过 content.js 通知用户
+                    console.warn('[MoeKoeEQ-MAIN] createMediaElementSource 失败：audio 已被 EQ 插件接管，返回哑节点');
+                    try {
+                        window.postMessage({
+                            source: MSG_SRC.MAIN,
+                            type: 'compatibility-warning',
+                            data: {
+                                type: 'loudness-normalization-conflict',
+                                message: '响度规格化与EQ插件冲突，响度规格化已失效。建议关闭主程序的"响度规格化"选项。'
+                            }
+                        }, _msgTargetOrigin);
+                    } catch (notifyErr) { /* ignore */ }
+                    var dummyNode = this.createGain();
+                    dummyNode.gain.value = 0;
+                    return dummyNode;
+                }
+                throw e;
+            }
 
             if (audioElement.tagName === 'AUDIO' && !isDestroyed && !pluginDisabled && !_isFallbackConnect) {
                 console.log('[MoeKoeEQ-MAIN] createMediaElementSource 拦截触发, audioElement:', audioElement.tagName, 'isDestroyed:', isDestroyed, 'pluginDisabled:', pluginDisabled, '_isFallbackConnect:', _isFallbackConnect);
@@ -1074,7 +1257,9 @@ setTimeout(function() {
                     } else if (isInitialized && externalGainNode && effectsNodes.stereoPanner) {
                         try {
                             effectsNodes.stereoPanner.disconnect();
-                            effectsNodes.stereoPanner.connect(externalGainNode);
+                            effectsNodes.stereoPanner.connect(ditherSplitter);
+                            try { ditherMerger.disconnect(); } catch (e2) {}
+                            ditherMerger.connect(externalGainNode);
                         } catch (e) {}
                     }
                 }, 100);
@@ -1107,7 +1292,8 @@ try {
                 sourceNode.disconnect();
             } catch (e) { }
 
-            sourceNode.connect(analyserInput);
+            sourceNode.connect(dcFilterNode);
+            dcFilterNode.connect(analyserInput);
             analyserInput.connect(eqInputNode);
 
             rebuildSignalPath();
@@ -1117,7 +1303,9 @@ try {
             eqOutputNode.connect(analyserOutput);
 
             effectsNodes.stereoPanner.disconnect();
-            effectsNodes.stereoPanner.connect(externalGainNode);
+            effectsNodes.stereoPanner.connect(ditherSplitter);
+            try { ditherMerger.disconnect(); } catch (e2) {}
+            ditherMerger.connect(externalGainNode);
 
             if (dynamicEQConfig.enabled) {
                 connectDynamicEQ();
@@ -1166,7 +1354,8 @@ if (externalGainNode) {
             sourceNode = externalSourceNode;
             audioElementConnected = true;
 
-            sourceNode.connect(analyserInput);
+            sourceNode.connect(dcFilterNode);
+            dcFilterNode.connect(analyserInput);
             analyserInput.connect(eqInputNode);
 
             rebuildSignalPath();
@@ -1178,13 +1367,17 @@ if (externalGainNode) {
             if (externalGainNode) {
                 try {
                     effectsNodes.stereoPanner.disconnect();
-                    effectsNodes.stereoPanner.connect(externalGainNode);
+                    effectsNodes.stereoPanner.connect(ditherSplitter);
+                    try { ditherMerger.disconnect(); } catch (e2) {}
+                    ditherMerger.connect(externalGainNode);
                 } catch (e) {}
             } else {
                 // 没有找到外部 gainNode，直接连接到 destination
                 try {
                     effectsNodes.stereoPanner.disconnect();
-                    effectsNodes.stereoPanner.connect(audioContext.destination);
+                    effectsNodes.stereoPanner.connect(ditherSplitter);
+                    try { ditherMerger.disconnect(); } catch (e2) {}
+                    ditherMerger.connect(audioContext.destination);
                     console.warn('[MoeKoeEQ-MAIN] 未找到外部 GainNode，直接连接到 audioContext.destination');
                 } catch (e) {}
             }
@@ -1290,7 +1483,8 @@ if (externalGainNode) {
             }
             _isFallbackConnect = false;
 
-            sourceNode.connect(analyserInput);
+            sourceNode.connect(dcFilterNode);
+            dcFilterNode.connect(analyserInput);
             analyserInput.connect(eqInputNode);
 
             rebuildSignalPath();
@@ -1606,7 +1800,25 @@ linearPhaseEnabled = enabled;
         notifyStateChange();
     }
 
+    var _linearPhasePending = false;
+    var _linearPhaseScheduled = false;
+
     function updateLinearPhase() {
+        if (!audioContext || !linearPhaseEnabled || !linearPhaseConvolver) return;
+        _linearPhasePending = true;
+        if (_linearPhaseScheduled) return;
+        _linearPhaseScheduled = true;
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(_doLinearPhaseUpdate);
+        } else {
+            setTimeout(_doLinearPhaseUpdate, 16);
+        }
+    }
+
+    function _doLinearPhaseUpdate() {
+        _linearPhaseScheduled = false;
+        if (!_linearPhasePending) return;
+        _linearPhasePending = false;
         if (!audioContext || !linearPhaseEnabled || !linearPhaseConvolver) return;
         try {
             var activeGains = getActiveGainsForLinearPhase();
@@ -1624,16 +1836,12 @@ linearPhaseEnabled = enabled;
                     if (linearPhaseConvolverR) linearPhaseConvolverR.buffer = impulse;
                 }
                 var peakAmp = impulse._moekoePeakAmplitude || 1.0;
-                var rms = impulse._moekoeRMS || 1.0;
 
                 var hasGain = false;
-                var maxGainAbs = 0;
                 for (var gi = 0; gi < 31; gi++) {
                     if (Math.abs(currentGains[gi]) > 0.01) {
                         hasGain = true;
-                        if (Math.abs(currentGains[gi]) > maxGainAbs) {
-                            maxGainAbs = Math.abs(currentGains[gi]);
-                        }
+                        break;
                     }
                 }
 
@@ -1669,6 +1877,90 @@ linearPhaseEnabled = enabled;
             }
         }
         notifyStateChange();
+    }
+
+    // === Dither 配置应用 ===
+    function applyDitherConfig() {
+        if (!audioContext) return;
+        var enabled = ditherConfig.enabled !== false;
+        var bits = ditherConfig.targetBits || 16;
+        var noiseShaping = ditherConfig.noiseShaping !== false;
+        if (enabled) {
+            // 启用：设置量化曲线 + 噪声增益
+            var curve = createDitherCurve(bits, noiseShaping);
+            if (ditherShaperL) ditherShaperL.curve = curve;
+            if (ditherShaperR) ditherShaperR.curve = curve;
+            // 噪声增益 = 1 LSB（TPDF 振幅）
+            var lsb = 1 / Math.pow(2, bits - 1);
+            if (ditherNoiseGainL) ditherNoiseGainL.gain.value = lsb * 0.5;
+            if (ditherNoiseGainR) ditherNoiseGainR.gain.value = lsb * 0.5;
+        } else {
+            // 禁用：清除曲线（恒等变换）+ 噪声增益归零
+            if (ditherShaperL) ditherShaperL.curve = null;
+            if (ditherShaperR) ditherShaperR.curve = null;
+            if (ditherNoiseGainL) ditherNoiseGainL.gain.value = 0;
+            if (ditherNoiseGainR) ditherNoiseGainR.gain.value = 0;
+        }
+    }
+
+    // === DC 偏移过滤配置应用 ===
+    // 启用：highpass frequency = cutoffFreq, Q = Q
+    // 禁用：frequency = 1Hz（极低，对音频无影响，等同旁通）
+    function applyDCFilterConfig() {
+        if (!audioContext || !dcFilterNode) return;
+        var enabled = dcFilterConfig.enabled !== false;
+        var cutoff = dcFilterConfig.cutoffFreq != null ? dcFilterConfig.cutoffFreq : DC_FILTER_DEFAULT.cutoffFreq;
+        var q = dcFilterConfig.Q != null ? dcFilterConfig.Q : DC_FILTER_DEFAULT.Q;
+        var t = audioContext.currentTime;
+        if (enabled) {
+            dcFilterNode.frequency.setValueAtTime(cutoff, t);
+            dcFilterNode.Q.setValueAtTime(q, t);
+        } else {
+            dcFilterNode.frequency.setValueAtTime(1, t);
+            dcFilterNode.Q.setValueAtTime(0.707, t);
+        }
+    }
+
+    // === 真峰值限幅器配置应用 ===
+    // 启用：oversampler 加载软限幅曲线 + 压缩器硬限幅 + ceiling gain 调整输出上限
+    // 禁用：oversampler 曲线置空（恒等） + 压缩器 ratio=1（旁通） + ceiling gain=1（单位增益）
+    function applyTruePeakConfig() {
+        if (!audioContext) return;
+        var enabled = truePeakLimiterConfig.enabled !== false;
+        var threshold = truePeakLimiterConfig.threshold != null ? truePeakLimiterConfig.threshold : TRUE_PEAK_LIMITER_DEFAULT.threshold;
+        var ceiling = truePeakLimiterConfig.ceiling != null ? truePeakLimiterConfig.ceiling : TRUE_PEAK_LIMITER_DEFAULT.ceiling;
+        var release = truePeakLimiterConfig.release != null ? truePeakLimiterConfig.release : TRUE_PEAK_LIMITER_DEFAULT.release;
+        if (enabled) {
+            // 软限幅曲线：threshold 以下恒等，threshold-ceiling 之间平滑过渡，ceiling 硬上限
+            var curve = createTruePeakCurve(threshold, ceiling);
+            if (truePeakOversampler) {
+                truePeakOversampler.curve = curve;
+                truePeakOversampler.oversample = '4x';
+            }
+            if (truePeakCompressor) {
+                truePeakCompressor.threshold.value = threshold;
+                truePeakCompressor.knee.value = 0;
+                truePeakCompressor.ratio.value = 1000; // 硬限幅（兜底）
+                truePeakCompressor.attack.value = 0.001;
+                truePeakCompressor.release.value = release;
+            }
+            // ceiling gain 将信号上限精确控制在 ceiling 线性值
+            if (truePeakCeilingGain) {
+                truePeakCeilingGain.gain.value = 1.0;
+            }
+        } else {
+            // 禁用：oversampler 恒等 + 压缩器旁通 + 单位增益
+            if (truePeakOversampler) {
+                truePeakOversampler.curve = null;
+            }
+            if (truePeakCompressor) {
+                truePeakCompressor.ratio.value = 1; // 旁通
+                truePeakCompressor.threshold.value = 0;
+            }
+            if (truePeakCeilingGain) {
+                truePeakCeilingGain.gain.value = 1.0;
+            }
+        }
     }
 
     function setEffect(effectName, value, silent) {
@@ -1863,6 +2155,13 @@ var preset = null;
         linearPhaseEnabled = false;
         dynamicEQConfig = Object.assign({}, DYNAMIC_EQ_DEFAULT);
         referenceProfile = null;
+        // 重置新增功能配置
+        dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT);
+        ditherConfig = Object.assign({}, DITHER_DEFAULT);
+        truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT);
+        applyDCFilterConfig();
+        applyDitherConfig();
+        applyTruePeakConfig();
 
         if (linearPhaseConvolver) {
             try { linearPhaseConvolver.disconnect(); } catch (e) {}
@@ -1896,16 +2195,42 @@ var preset = null;
         var t = audioContext.currentTime;
         var chainGain = linearPhaseEnabled ? linearPhaseCompensationGain : 1.0;
         if (disabled) {
+            // 彻底旁路：断开 sourceNode 与 EQ 链路，直连 externalGainNode/destination
+            // 避免 EQ 链路异常时禁用插件仍无法恢复原生音频
+            try {
+                if (sourceNode) sourceNode.disconnect();
+            } catch (e) { /* ignore */ }
+            try {
+                if (sourceNode) {
+                    if (externalGainNode) {
+                        sourceNode.connect(externalGainNode);
+                    } else {
+                        sourceNode.connect(audioContext.destination);
+                    }
+                }
+            } catch (e) { /* ignore */ }
             if (eqChainGain) eqChainGain.gain.setValueAtTime(0.0, t);
             if (eqBypassGain) eqBypassGain.gain.setValueAtTime(1.0, t);
             if (effectsNodes.effectsBypassGain) effectsNodes.effectsBypassGain.gain.setValueAtTime(1.0, t);
             if (effectsNodes.effectsMixGain) effectsNodes.effectsMixGain.gain.setValueAtTime(0.0, t);
+            // 禁用时立即静音 Dither 噪声源，避免通过 ditherMerger→destination 链路泄漏
+            if (ditherNoiseGainL) ditherNoiseGainL.gain.setValueAtTime(0.0, t);
+            if (ditherNoiseGainR) ditherNoiseGainR.gain.setValueAtTime(0.0, t);
             stopDynamicEQLoop();
         } else {
+            // 恢复 EQ 链路：sourceNode 重新接入 dcFilter（保留 DC 过滤）
+            try {
+                if (sourceNode) sourceNode.disconnect();
+            } catch (e) { /* ignore */ }
+            try {
+                if (sourceNode) sourceNode.connect(dcFilterNode);
+            } catch (e) { /* ignore */ }
             if (eqChainGain) eqChainGain.gain.setValueAtTime(isEnabled ? chainGain : 0.0, t);
             if (eqBypassGain) eqBypassGain.gain.setValueAtTime(isEnabled ? 0.0 : 1.0, t);
             if (effectsEnabled && effectsNodes.effectsBypassGain) effectsNodes.effectsBypassGain.gain.setValueAtTime(0.0, t);
             if (effectsEnabled && effectsNodes.effectsMixGain) effectsNodes.effectsMixGain.gain.setValueAtTime(1.0, t);
+            // 恢复 Dither 噪声增益（按当前配置重新应用）
+            applyDitherConfig();
             if (dynamicEQConfig.enabled) startDynamicEQLoop();
         }
         notifyStateChange();
@@ -2023,29 +2348,9 @@ var preset = null;
     }
 
     function saveSettings() {
-        try {
-var settings = {
-                enabled: isEnabled, gains: currentGains, qValues: currentQValues,
-                preset: currentPreset, effects: currentEffects, effectsEnabled: effectsEnabled,
-                pluginDisabled: pluginDisabled, channelMode: channelMode,
-                leftGains: leftGains, rightGains: rightGains,
-                leftQValues: leftQValues, rightQValues: rightQValues,
-                dynamicEQ: dynamicEQConfig, midSideEnabled: midSideEnabled,
-                midGains: midGains, sideGains: sideGains,
-                linearPhaseEnabled: linearPhaseEnabled,
-                referenceProfile: referenceProfile ? {
-                    sampleRate: referenceProfile.sampleRate,
-                    fftSize: referenceProfile.fftSize,
-                    frequencyData: referenceProfile.frequencyData.filter(function(_, i) { return i % 4 === 0; }),
-                    timestamp: referenceProfile.timestamp,
-                    frameCount: referenceProfile.frameCount,
-                    downsampled: true,
-                    originalLength: referenceProfile.frequencyData.length
-                } : null,
-                timestamp: Date.now()
-            };
-            localStorage.setItem('__moekoe_eq_main_settings', JSON.stringify(settings));
-        } catch (e) { /* ignore */ }
+        // 不再写入 localStorage，避免与 chrome.storage.local 双存储不同步
+        // 状态同步完全由 content.js 通过 chrome.storage.local 完成
+        // 此函数保留为空操作，仅作为状态变更后的内存通知触发点
     }
 
     function loadSettings() {
@@ -2071,6 +2376,9 @@ var s = JSON.parse(saved);
                 sideGains = s.sideGains || Array(31).fill(0);
                 linearPhaseEnabled = s.linearPhaseEnabled || false;
                 referenceProfile = s.referenceProfile || null;
+                dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT, s.dcFilter || {});
+                ditherConfig = Object.assign({}, DITHER_DEFAULT, s.dither || {});
+                truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, s.truePeakLimiter || {});
                 if (referenceProfile && referenceProfile.downsampled && referenceProfile.originalLength) {
                     var restored = new Array(referenceProfile.originalLength);
                     var srcData = referenceProfile.frequencyData;
@@ -2134,6 +2442,10 @@ var s = JSON.parse(saved);
         sideGains = Array.isArray(s.sideGains) && s.sideGains.length === 31 ? s.sideGains : sideGains;
         linearPhaseEnabled = s.linearPhaseEnabled || false;
         referenceProfile = s.referenceProfile || null;
+        // 新增功能配置（向后兼容合并）
+        dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT, s.dcFilter || {});
+        ditherConfig = Object.assign({}, DITHER_DEFAULT, s.dither || {});
+        truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, s.truePeakLimiter || {});
         if (isInitialized) tryApplySettings();
     }
 
@@ -2182,6 +2494,12 @@ var t = audioContext.currentTime;
             if (!linearPhaseConvolver) insertLinearPhaseConvolver();
             updateLinearPhase();
         }
+        // 应用 Dither 配置
+        applyDitherConfig();
+        // 应用真峰值限幅器配置
+        applyTruePeakConfig();
+        // 应用 DC 偏移过滤配置
+        applyDCFilterConfig();
         notifyStateChange();
     }
 
@@ -2221,7 +2539,9 @@ var t = audioContext.currentTime;
             leftQValues: leftQValues, rightQValues: rightQValues,
             dynamicEQ: dynamicEQConfig, midSideEnabled: midSideEnabled,
             midGains: midGains, sideGains: sideGains,
-            linearPhaseEnabled: linearPhaseEnabled
+            linearPhaseEnabled: linearPhaseEnabled,
+            dcFilter: dcFilterConfig, dither: ditherConfig,
+            truePeakLimiter: truePeakLimiterConfig
         };
     }
 
@@ -2238,7 +2558,7 @@ var t = audioContext.currentTime;
                 try { oldSourceNode.disconnect(); } catch (e) { }
             }
 
-            sourceNode.connect(analyserInput);
+            sourceNode.connect(dcFilterNode);
             capturedAudioElement = newElement;
             audioElementConnected = true;
 
@@ -2361,6 +2681,21 @@ var t = audioContext.currentTime;
         try { if (N.deEsserFilter) N.deEsserFilter.disconnect(); } catch (e) {}
         try { if (N.loudnessMaxComp) N.loudnessMaxComp.disconnect(); } catch (e) {}
         try { if (N.loudnessMaxMakeupGain) N.loudnessMaxMakeupGain.disconnect(); } catch (e) {}
+        // DC 偏移过滤节点
+        try { if (dcFilterNode) dcFilterNode.disconnect(); } catch (e) {}
+        // Dither 节点
+        try { if (ditherSplitter) ditherSplitter.disconnect(); } catch (e) {}
+        try { if (ditherMerger) ditherMerger.disconnect(); } catch (e) {}
+        try { if (ditherShaperL) ditherShaperL.disconnect(); } catch (e) {}
+        try { if (ditherShaperR) ditherShaperR.disconnect(); } catch (e) {}
+        try { if (ditherNoiseGainL) ditherNoiseGainL.disconnect(); } catch (e) {}
+        try { if (ditherNoiseGainR) ditherNoiseGainR.disconnect(); } catch (e) {}
+        try { if (ditherNoiseSource) ditherNoiseSource.stop(); } catch (e) {}
+        try { if (ditherNoiseSource) ditherNoiseSource.disconnect(); } catch (e) {}
+        // 真峰值限幅器节点
+        try { if (truePeakOversampler) truePeakOversampler.disconnect(); } catch (e) {}
+        try { if (truePeakCompressor) truePeakCompressor.disconnect(); } catch (e) {}
+        try { if (truePeakCeilingGain) truePeakCeilingGain.disconnect(); } catch (e) {}
     }
 
     function resetAudioState(clearCaptured) {
@@ -2377,6 +2712,20 @@ var t = audioContext.currentTime;
         spectrumData = null;
         spectrumOutputData = null;
         dynamicEQAnalyser = null;
+        // DC 偏移过滤节点
+        dcFilterNode = null;
+        // Dither 节点
+        ditherShaperL = null;
+        ditherShaperR = null;
+        ditherSplitter = null;
+        ditherMerger = null;
+        ditherNoiseSource = null;
+        ditherNoiseGainL = null;
+        ditherNoiseGainR = null;
+        // 真峰值限幅器节点
+        truePeakOversampler = null;
+        truePeakCompressor = null;
+        truePeakCeilingGain = null;
         eqInputNode = null;
         eqOutputNode = null;
         eqChainGain = null;
@@ -2502,7 +2851,6 @@ var t = audioContext.currentTime;
     if (OrigAudio) {
         window.Audio = function(src) {
             var audio = new OrigAudio(src);
-            Object.setPrototypeOf(audio, window.Audio.prototype);
             try {
                 audio.addEventListener('loadstart', function() {
                     if (!isInitialized && !isDestroyed) {
@@ -2522,7 +2870,6 @@ var t = audioContext.currentTime;
         };
         window.Audio.prototype = OrigAudio.prototype;
         window.Audio.prototype.constructor = window.Audio;
-        Object.defineProperty(window.Audio, 'name', { value: 'Audio', configurable: true });
     }
 
     loadSettings();
@@ -2540,8 +2887,13 @@ var t = audioContext.currentTime;
         }
         _retryCount++;
         console.log('[MoeKoeEQ-MAIN] 重试查找音频元素, 第', _retryCount, '次');
+        // 初始化进行中则跳过本次重试，避免重置拦截标志导致竞态
+        if (isInitializing) {
+            console.log('[MoeKoeEQ-MAIN] 初始化进行中，跳过本次重试');
+            return;
+        }
         // 如果拦截标志仍为 true 但未初始化，重置标志以允许重试
-        if (_interceptHasSource && !isInitializing) {
+        if (_interceptHasSource) {
             console.warn('[MoeKoeEQ-MAIN] 重试时重置拦截标志');
             _interceptHasSource = false;
             externalSourceNode = null;
@@ -2659,7 +3011,28 @@ if (!pluginDisabled) toggleMidSide(data.data.enabled); break;
             case 'toggle-linear-phase':
 if (!pluginDisabled) toggleLinearPhase(data.data.enabled); break;
             case 'set-dynamic-eq':
-if (!pluginDisabled) setDynamicEQ(data.data.dynamicEQ); break;
+	if (!pluginDisabled) setDynamicEQ(data.data.dynamicEQ); break;
+            case 'set-dither':
+                if (!pluginDisabled) {
+                    ditherConfig = Object.assign({}, DITHER_DEFAULT, data.data.dither);
+                    applyDitherConfig();
+                    notifyStateChange();
+                }
+                break;
+            case 'set-true-peak':
+                if (!pluginDisabled) {
+                    truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, data.data.truePeakLimiter);
+                    applyTruePeakConfig();
+                    notifyStateChange();
+                }
+                break;
+            case 'set-dc-filter':
+                if (!pluginDisabled) {
+                    dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT, data.data.dcFilter);
+                    applyDCFilterConfig();
+                    notifyStateChange();
+                }
+                break;
             case 'capture-reference':
 captureReferenceProfile(); break;
             case 'match-reference':
@@ -2675,6 +3048,12 @@ matchReferenceProfile(); break;
                 if (requestSettingsTimer) { clearTimeout(requestSettingsTimer); requestSettingsTimer = null; }
                 requestSettingsRetryCount = 0;
                 applySettingsFromStorage(data.data);
+                break;
+            case 'apply-settings':
+                // 分享码导入：应用完整设置对象
+                applySettingsFromStorage(data.data);
+                if (isInitialized) tryApplySettings();
+                notifyStateChange();
                 break;
         }
     });
@@ -2714,7 +3093,8 @@ matchReferenceProfile(); break;
                         initDynamicEQNodes();
                         sourceNode = externalSourceNode;
                         audioElementConnected = true;
-                        sourceNode.connect(analyserInput);
+                        sourceNode.connect(dcFilterNode);
+                        dcFilterNode.connect(analyserInput);
                         analyserInput.connect(eqInputNode);
                         rebuildSignalPath();
                         eqOutputNode.connect(effectsNodes.effectsBypassGain);
@@ -2723,7 +3103,9 @@ matchReferenceProfile(); break;
                         if (externalGainNode) {
                             try {
                                 effectsNodes.stereoPanner.disconnect();
-                                effectsNodes.stereoPanner.connect(externalGainNode);
+                                effectsNodes.stereoPanner.connect(ditherSplitter);
+                                try { ditherMerger.disconnect(); } catch (e2) {}
+                                ditherMerger.connect(externalGainNode);
                             } catch (e) {}
                         }
                         if (dynamicEQConfig.enabled) {
@@ -2769,9 +3151,25 @@ matchReferenceProfile(); break;
     var _acStateChangeTimer = null;
     var _audioSrcObserver = null;
     var _onAcStateChange = null;
+    var _onAudioPlayResume = null;
 
     function watchAudioElementSrc() {
         if (!capturedAudioElement || _audioSrcObserver) return;
+        // 监听 audio 元素的 play 事件，确保 AudioContext 在后台/隐藏后恢复
+        if (_onAudioPlayResume) {
+            try { capturedAudioElement.removeEventListener('play', _onAudioPlayResume); } catch (e) {}
+        }
+        _onAudioPlayResume = function() {
+            if (isDestroyed || !audioContext) return;
+            if (audioContext.state === 'suspended') {
+                try {
+                    audioContext.resume().catch(function(e) {
+                        console.warn('[MoeKoeEQ-MAIN] resume on play failed:', e);
+                    });
+                } catch (e) { /* ignore */ }
+            }
+        };
+        try { capturedAudioElement.addEventListener('play', _onAudioPlayResume); } catch (e) {}
         try {
             _audioSrcObserver = new MutationObserver(function(mutations) {
                 if (isDestroyed) return;
@@ -2815,6 +3213,16 @@ matchReferenceProfile(); break;
                 if (audioContext.state === 'suspended') {
                     console.log('[MoeKoeEQ-MAIN] AudioContext suspended, stopping Dynamic EQ');
                     stopDynamicEQLoop();
+                    // 后台/隐藏窗口场景下主动恢复 AudioContext，避免音频流中断
+                    if (!isDestroyed && isInitialized && !pluginDisabled) {
+                        try {
+                            audioContext.resume().then(function() {
+                                console.log('[MoeKoeEQ-MAIN] AudioContext resumed from suspended state');
+                            }).catch(function(e) {
+                                console.warn('[MoeKoeEQ-MAIN] AudioContext resume failed (will retry on play):', e);
+                            });
+                        } catch (e) { /* ignore */ }
+                    }
                 }
 
                 if (audioContext.state === 'running' && isInitialized && !isDestroyed) {
