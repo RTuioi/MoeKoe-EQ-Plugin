@@ -1,0 +1,68 @@
+name: Archive Traffic
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch traffic stats
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_PAT }}
+          OBSERVED_REPO: ${{ github.repository }}
+        run: |
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o clones.json \
+            "https://api.github.com/repos/$OBSERVED_REPO/traffic/clones"
+
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o views.json \
+            "https://api.github.com/repos/$OBSERVED_REPO/traffic/views"
+
+      - name: Push to metrics repo
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_PAT }}
+          OBSERVED_REPO: ${{ github.repository }}
+          METRICS_REPO: RTuioi/traffic-vault
+        run: |
+          set -e
+          git config --global user.name "metrics-bot"
+          git config --global user.email "metrics-bot@users.noreply.github.com"
+
+          git clone "https://oauth2:${GH_TOKEN}@github.com/${METRICS_REPO}.git" metrics-temp
+          cd metrics-temp
+
+          FILE="data/$(echo "$OBSERVED_REPO" | tr '/' '__').csv"
+          HEADER="date,repository,type,count,uniques"
+          mkdir -p data
+
+          if [ ! -f "$FILE" ]; then
+            echo "$HEADER" > "$FILE"
+          fi
+
+          LATEST_CLONE_DATE=$(jq -r '.clones[-1].timestamp[0:10] // empty' ../clones.json)
+          [ -z "$LATEST_CLONE_DATE" ] && LATEST_CLONE_DATE=$(date +%F)
+
+          jq -r --arg REPO "$OBSERVED_REPO" '.clones[] | [.timestamp[0:10], $REPO, "clones", .count, .uniques] | @csv' ../clones.json >> "$FILE"
+          jq -r --arg REPO "$OBSERVED_REPO" --arg DATE "$LATEST_CLONE_DATE" '[ "\($DATE)~ 14-day total", $REPO, "clones_total", .count, .uniques ] | @csv' ../clones.json >> "$FILE"
+
+          LATEST_VIEW_DATE=$(jq -r '.views[-1].timestamp[0:10] // empty' ../views.json)
+          [ -z "$LATEST_VIEW_DATE" ] && LATEST_VIEW_DATE=$(date +%F)
+
+          jq -r --arg REPO "$OBSERVED_REPO" '.views[] | [.timestamp[0:10], $REPO, "views", .count, .uniques] | @csv' ../views.json >> "$FILE"
+          jq -r --arg REPO "$OBSERVED_REPO" --arg DATE "$LATEST_VIEW_DATE" '[ "\($DATE)~ 14-day total", $REPO, "views_total", .count, .uniques ] | @csv' ../views.json >> "$FILE"
+
+          echo "$HEADER" > "$FILE.tmp"
+          tail -n +2 "$FILE" | awk -F, '$3!="" {a[$1,$2,$3]=$0} END {for (i in a) print a[i]}' | sort -t, -k1,1r >> "$FILE.tmp"
+          mv "$FILE.tmp" "$FILE"
+
+          git add "$FILE"
+          git commit -m "metrics: record clones and views for $OBSERVED_REPO" || true
+          git push
