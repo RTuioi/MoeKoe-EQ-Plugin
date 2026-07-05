@@ -5,6 +5,9 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   backup:
     runs-on: ubuntu-latest
@@ -14,55 +17,176 @@ jobs:
           GH_TOKEN: ${{ secrets.METRICS_PAT }}
           OBSERVED_REPO: ${{ github.repository }}
         run: |
-          curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -o clones.json \
-            "https://api.github.com/repos/$OBSERVED_REPO/traffic/clones"
+          echo "Fetching traffic for $OBSERVED_REPO ..."
 
-          curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -o views.json \
-            "https://api.github.com/repos/$OBSERVED_REPO/traffic/views"
+          fetch_traffic() {
+            local endpoint="$1"
+            local out_file="$2"
+            local status
+            local attempt=0
+            while [ $attempt -lt 3 ]; do
+              attempt=$((attempt + 1))
+              status=$(curl -s -w "%{http_code}" -o "$out_file" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/$OBSERVED_REPO/traffic/$endpoint")
+              if [ "$status" = "200" ]; then
+                echo "Got $endpoint (attempt $attempt, HTTP $status)"
+                return 0
+              fi
+              echo "Attempt $attempt for $endpoint failed (HTTP $status)"
+              [ $attempt -lt 3 ] && sleep 10
+            done
+            return 1
+          }
 
-      - name: Push to metrics repo
+          fetch_traffic clones clones.json || { echo "ERROR: clones API failed after retries"; cat clones.json 2>/dev/null; exit 1; }
+          fetch_traffic views views.json || { echo "ERROR: views API failed after retries"; cat views.json 2>/dev/null; exit 1; }
+
+          echo "Clones data:"
+          jq '{count, uniques}' clones.json
+          echo "Views data:"
+          jq '{count, uniques}' views.json
+
+      - name: Build CSV and push via API
         env:
           GH_TOKEN: ${{ secrets.METRICS_PAT }}
           OBSERVED_REPO: ${{ github.repository }}
-          METRICS_REPO: RTuioi/traffic-vault
+          METRICS_REPO: ${{ secrets.METRICS_REPO }}
         run: |
           set -e
-          git config --global user.name "metrics-bot"
-          git config --global user.email "metrics-bot@users.noreply.github.com"
-
-          git clone "https://oauth2:${GH_TOKEN}@github.com/${METRICS_REPO}.git" metrics-temp
-          cd metrics-temp
-
           FILE="data/$(echo "$OBSERVED_REPO" | tr '/' '__').csv"
           HEADER="date,repository,type,count,uniques"
-          mkdir -p data
 
-          if [ ! -f "$FILE" ]; then
-            echo "$HEADER" > "$FILE"
+          CLONES_COUNT=$(jq '.clones | length' clones.json)
+          VIEWS_COUNT=$(jq '.views | length' views.json)
+          echo "Clones entries: $CLONES_COUNT, Views entries: $VIEWS_COUNT"
+
+          # 404 = 文件不存在，算正常
+          EXISTING_SHA=""
+          EXISTING_CSV=""
+          attempt=0
+          HTTP_CODE=""
+          while [ $attempt -lt 3 ]; do
+            attempt=$((attempt + 1))
+            HTTP_CODE=$(curl -s -o existing.json -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$METRICS_REPO/contents/$FILE")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
+              break
+            fi
+            echo "Attempt $attempt for existing CSV failed (HTTP $HTTP_CODE)"
+            [ $attempt -lt 3 ] && sleep 5
+          done
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            EXISTING_SHA=$(jq -r '.sha' existing.json)
+            EXISTING_CSV=$(jq -r '.content' existing.json | base64 -d 2>/dev/null || echo "")
+            echo "Found existing CSV"
+          else
+            echo "No existing CSV (HTTP $HTTP_CODE), creating new"
           fi
 
-          LATEST_CLONE_DATE=$(jq -r '.clones[-1].timestamp[0:10] // empty' ../clones.json)
-          [ -z "$LATEST_CLONE_DATE" ] && LATEST_CLONE_DATE=$(date +%F)
+          if [ -z "$EXISTING_CSV" ]; then
+            NEW_CSV="$HEADER"$'\n'
+          else
+            NEW_CSV="$EXISTING_CSV"$'\n'
+          fi
 
-          jq -r --arg REPO "$OBSERVED_REPO" '.clones[] | [.timestamp[0:10], $REPO, "clones", .count, .uniques] | @csv' ../clones.json >> "$FILE"
-          jq -r --arg REPO "$OBSERVED_REPO" --arg DATE "$LATEST_CLONE_DATE" '[ "\($DATE)~ 14-day total", $REPO, "clones_total", .count, .uniques ] | @csv' ../clones.json >> "$FILE"
+          if [ "$CLONES_COUNT" -gt 0 ]; then
+            NEW_CSV+=$(jq -r --arg R "$OBSERVED_REPO" '.clones[] | [.timestamp[0:10], $R, "clones", .count, .uniques] | @csv' clones.json)
+            NEW_CSV+=$'\n'
+          fi
 
-          LATEST_VIEW_DATE=$(jq -r '.views[-1].timestamp[0:10] // empty' ../views.json)
-          [ -z "$LATEST_VIEW_DATE" ] && LATEST_VIEW_DATE=$(date +%F)
+          CT=$(jq -r '.count' clones.json)
+          CU=$(jq -r '.uniques' clones.json)
+          NEW_CSV+="$(date +%F),$OBSERVED_REPO,clones_total,$CT,$CU"$'\n'
 
-          jq -r --arg REPO "$OBSERVED_REPO" '.views[] | [.timestamp[0:10], $REPO, "views", .count, .uniques] | @csv' ../views.json >> "$FILE"
-          jq -r --arg REPO "$OBSERVED_REPO" --arg DATE "$LATEST_VIEW_DATE" '[ "\($DATE)~ 14-day total", $REPO, "views_total", .count, .uniques ] | @csv' ../views.json >> "$FILE"
+          if [ "$VIEWS_COUNT" -gt 0 ]; then
+            NEW_CSV+=$(jq -r --arg R "$OBSERVED_REPO" '.views[] | [.timestamp[0:10], $R, "views", .count, .uniques] | @csv' views.json)
+            NEW_CSV+=$'\n'
+          fi
 
-          echo "$HEADER" > "$FILE.tmp"
-          tail -n +2 "$FILE" | awk -F, '$3!="" {a[$1,$2,$3]=$0} END {for (i in a) print a[i]}' | sort -t, -k1,1r >> "$FILE.tmp"
-          mv "$FILE.tmp" "$FILE"
+          VT=$(jq -r '.count' views.json)
+          VU=$(jq -r '.uniques' views.json)
+          NEW_CSV+="$(date +%F),$OBSERVED_REPO,views_total,$VT,$VU"$'\n'
 
-          git add "$FILE"
-          git commit -m "metrics: record clones and views for $OBSERVED_REPO" || true
-          git push
+          # 兼容旧格式：归一化 "YYYY-MM-DD 14d-total" 为纯日期，否则去重失效
+          NEW_CSV=$(echo "$NEW_CSV" | sed -E 's/"([0-9]{4}-[0-9]{2}-[0-9]{2}) 14d-total"/\1/g')
+
+          # 去重：同键后写覆盖先写
+          DEDUP_CSV="$HEADER"$'\n'
+          DEDUP_CSV+=$(echo "$NEW_CSV" | tail -n +2 | awk -F, '$3!="" {a[$1,$2,$3]=$0} END {for (i in a) print a[i]}' | sort -t, -k1,1r)
+
+          echo "CSV rows: $(echo "$DEDUP_CSV" | wc -l)"
+
+          B64=$(echo "$DEDUP_CSV" | base64 -w 0)
+
+          if [ -z "$EXISTING_SHA" ]; then
+            BODY=$(jq -n --arg m "metrics: record traffic for $OBSERVED_REPO" --arg c "$B64" '{message: $m, content: $c}')
+          else
+            BODY=$(jq -n --arg m "metrics: record traffic for $OBSERVED_REPO" --arg c "$B64" --arg s "$EXISTING_SHA" '{message: $m, content: $c, sha: $s}')
+          fi
+
+          attempt=0
+          HTTP_PUSH=""
+          while [ $attempt -lt 3 ]; do
+            attempt=$((attempt + 1))
+            HTTP_PUSH=$(curl -s -o push_result.json -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$METRICS_REPO/contents/$FILE" \
+              -d "$BODY")
+            if [ "$HTTP_PUSH" = "200" ] || [ "$HTTP_PUSH" = "201" ]; then
+              echo "Done! Saved to $METRICS_REPO/$FILE"
+              break
+            fi
+            echo "Push attempt $attempt failed (HTTP $HTTP_PUSH):"
+            cat push_result.json
+            [ $attempt -lt 3 ] && sleep 5
+          done
+
+          if [ "$HTTP_PUSH" != "200" ] && [ "$HTTP_PUSH" != "201" ]; then
+            echo "ERROR: All push attempts failed"
+            exit 1
+          fi
+
+  notify-failure:
+    needs: backup
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issue in metrics-database
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_PAT }}
+          METRICS_REPO: ${{ secrets.METRICS_REPO }}
+          OBSERVED_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Traffic archive failed for $OBSERVED_REPO on $(date -u +%F)"
+          BODY="自动归档运行失败，请检查日志。
+
+          - 被监控仓库: \`$OBSERVED_REPO\`
+          - 运行链接: $RUN_URL
+          - 失败时间(UTC): $(date -u)
+
+          本 issue 由 workflow 自动创建，确认问题后可关闭。"
+          PAYLOAD=$(jq -n --arg t "$TITLE" --arg b "$BODY" '{title: $t, body: $b}')
+          HTTP=$(curl -s -o issue_result.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$METRICS_REPO/issues" \
+            -d "$PAYLOAD")
+          if [ "$HTTP" = "201" ]; then
+            echo "Created failure issue in $METRICS_REPO"
+          else
+            echo "Failed to create issue (HTTP $HTTP):"
+            cat issue_result.json
+          fi
