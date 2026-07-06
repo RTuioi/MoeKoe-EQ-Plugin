@@ -222,6 +222,10 @@
         }
         var version = withoutPrefix.substring(0, colonIdx);
         var compressed = withoutPrefix.substring(colonIdx + 1);
+        var SUPPORTED_SHARE_CODE_VERSIONS = ['2.0'];
+        if (SUPPORTED_SHARE_CODE_VERSIONS.indexOf(version) < 0) {
+            return { error: '不支持的分享码版本：' + version + '（当前支持 v' + SUPPORTED_SHARE_CODE_VERSIONS.join('/') + '）' };
+        }
         var json;
         try {
             json = LZString.decompressFromBase64(compressed);
@@ -238,24 +242,70 @@
         }
     }
 
+    function _sanitizeNumberArray(arr, len, minVal, maxVal) {
+        if (!Array.isArray(arr) || arr.length !== len) return null;
+        var out = new Array(len);
+        for (var i = 0; i < len; i++) {
+            var v = arr[i];
+            if (typeof v !== 'number' || !isFinite(v)) return null;
+            out[i] = Math.max(minVal, Math.min(maxVal, v));
+        }
+        return out;
+    }
+
+    function _sanitizeEffects(effectsRaw) {
+        if (!effectsRaw || typeof effectsRaw !== 'object') return null;
+        var out = Object.assign({}, AUDIO_EFFECTS_DEFAULT);
+        for (var k in effectsRaw) {
+            if (!Object.prototype.hasOwnProperty.call(AUDIO_EFFECTS_DEFAULT, k)) continue;
+            var v = effectsRaw[k];
+            if (typeof v !== 'number' || !isFinite(v)) continue;
+            var max = (k === 'outputGain' || k === 'stereoBalance') ? 100 : (AUDIO_EFFECTS_DEFAULT[k] || 0);
+            var min = (k === 'outputGain' || k === 'stereoBalance') ? 0 : 0;
+            out[k] = Math.max(min, Math.min(100, v));
+        }
+        return out;
+    }
+
+    function _sanitizeDynamicEQ(dynRaw) {
+        if (!dynRaw || typeof dynRaw !== 'object') return null;
+        var out = Object.assign({}, DYNAMIC_EQ_DEFAULT);
+        if (typeof dynRaw.enabled === 'boolean') out.enabled = dynRaw.enabled;
+        if (typeof dynRaw.threshold === 'number' && isFinite(dynRaw.threshold)) out.threshold = Math.max(-60, Math.min(0, dynRaw.threshold));
+        if (typeof dynRaw.ratio === 'number' && isFinite(dynRaw.ratio)) out.ratio = Math.max(1, Math.min(20, dynRaw.ratio));
+        if (typeof dynRaw.attack === 'number' && isFinite(dynRaw.attack)) out.attack = Math.max(0, Math.min(1, dynRaw.attack));
+        if (typeof dynRaw.release === 'number' && isFinite(dynRaw.release)) out.release = Math.max(0, Math.min(2, dynRaw.release));
+        return out;
+    }
+
     function applyDecodedShareCode(payload) {
         if (!currentSettings) currentSettings = buildDefaultSettingsLocal();
-        if (payload.gains && payload.gains.length === 31) currentSettings.gains = payload.gains.slice();
-        if (payload.qValues && payload.qValues.length === 31) currentSettings.qValues = payload.qValues.slice();
-        if (payload.effects) currentSettings.effects = Object.assign({}, AUDIO_EFFECTS_DEFAULT, payload.effects);
-        if (typeof payload.effectsEnabled !== 'undefined') currentSettings.effectsEnabled = payload.effectsEnabled;
-        if (payload.dynamicEQ) currentSettings.dynamicEQ = Object.assign({}, DYNAMIC_EQ_DEFAULT, payload.dynamicEQ);
+        var g = _sanitizeNumberArray(payload.gains, 31, GAIN_MIN, GAIN_MAX);
+        if (g) currentSettings.gains = g;
+        var q = _sanitizeNumberArray(payload.qValues, 31, Q_VALUE_MIN, Q_VALUE_MAX);
+        if (q) currentSettings.qValues = q;
+        var eff = _sanitizeEffects(payload.effects);
+        if (eff) currentSettings.effects = eff;
+        if (typeof payload.effectsEnabled === 'boolean') currentSettings.effectsEnabled = payload.effectsEnabled;
+        var dyn = _sanitizeDynamicEQ(payload.dynamicEQ);
+        if (dyn) currentSettings.dynamicEQ = dyn;
         if (typeof payload.channelMode === 'string' && CHANNEL_MODES.indexOf(payload.channelMode) >= 0) {
             currentSettings.channelMode = payload.channelMode;
         }
-        if (payload.leftGains && payload.leftGains.length === 31) currentSettings.leftGains = payload.leftGains.slice();
-        if (payload.rightGains && payload.rightGains.length === 31) currentSettings.rightGains = payload.rightGains.slice();
-        if (payload.leftQValues && payload.leftQValues.length === 31) currentSettings.leftQValues = payload.leftQValues.slice();
-        if (payload.rightQValues && payload.rightQValues.length === 31) currentSettings.rightQValues = payload.rightQValues.slice();
-        if (typeof payload.midSideEnabled !== 'undefined') currentSettings.midSideEnabled = payload.midSideEnabled;
-        if (payload.midGains && payload.midGains.length === 31) currentSettings.midGains = payload.midGains.slice();
-        if (payload.sideGains && payload.sideGains.length === 31) currentSettings.sideGains = payload.sideGains.slice();
-        if (typeof payload.linearPhaseEnabled !== 'undefined') currentSettings.linearPhaseEnabled = payload.linearPhaseEnabled;
+        var lg = _sanitizeNumberArray(payload.leftGains, 31, GAIN_MIN, GAIN_MAX);
+        if (lg) currentSettings.leftGains = lg;
+        var rg = _sanitizeNumberArray(payload.rightGains, 31, GAIN_MIN, GAIN_MAX);
+        if (rg) currentSettings.rightGains = rg;
+        var lq = _sanitizeNumberArray(payload.leftQValues, 31, Q_VALUE_MIN, Q_VALUE_MAX);
+        if (lq) currentSettings.leftQValues = lq;
+        var rq = _sanitizeNumberArray(payload.rightQValues, 31, Q_VALUE_MIN, Q_VALUE_MAX);
+        if (rq) currentSettings.rightQValues = rq;
+        if (typeof payload.midSideEnabled === 'boolean') currentSettings.midSideEnabled = payload.midSideEnabled;
+        var mg = _sanitizeNumberArray(payload.midGains, 31, GAIN_MIN, GAIN_MAX);
+        if (mg) currentSettings.midGains = mg;
+        var sg = _sanitizeNumberArray(payload.sideGains, 31, GAIN_MIN, GAIN_MAX);
+        if (sg) currentSettings.sideGains = sg;
+        if (typeof payload.linearPhaseEnabled === 'boolean') currentSettings.linearPhaseEnabled = payload.linearPhaseEnabled;
         if (typeof payload.preset === 'string') currentSettings.preset = payload.preset;
         if (payload.dcFilter && typeof payload.dcFilter === 'object') {
             currentSettings.dcFilter = Object.assign({}, DC_FILTER_DEFAULT, payload.dcFilter);
@@ -266,7 +316,6 @@
         if (payload.truePeakLimiter && typeof payload.truePeakLimiter === 'object') {
             currentSettings.truePeakLimiter = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, payload.truePeakLimiter);
         }
-        // 同步到 inject.js (MAIN world) 和 storage
         sendToMain('apply-settings', currentSettings);
         saveSettingsToStorage(currentSettings);
     }
@@ -435,14 +484,14 @@
             closeHint();
             setTimeout(showHelpDialog, 200);
         });
-        document.body.appendChild(overlay);
+        shadowRoot.appendChild(overlay);
 
-        // 添加进入动画 keyframes（一次性）
-        if (!document.getElementById('moekoe-hint-style')) {
+        // 添加进入动画 keyframes（一次性，注入 shadowRoot 避免污染主文档）
+        if (!shadowRoot.querySelector('#moekoe-hint-style')) {
             var style = document.createElement('style');
             style.id = 'moekoe-hint-style';
             style.textContent = '@keyframes moekoeHintIn{from{opacity:0;transform:translateY(-12px) scale(0.95);}to{opacity:1;transform:translateY(0) scale(1);}}';
-            document.head.appendChild(style);
+            shadowRoot.appendChild(style);
         }
     }
 
@@ -571,7 +620,7 @@
         overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
         var closeBtn = box.querySelector('#moekoe-help-close');
         if (closeBtn) closeBtn.addEventListener('click', closeOverlay);
-        document.body.appendChild(overlay);
+        shadowRoot.appendChild(overlay);
     }
 
     function safeRuntimeMessage(message, callback) {
@@ -595,6 +644,17 @@
     function sendToMain(type, data) {
         if (!MSG_SRC) return;
 window.postMessage({ source: MSG_SRC.CONTENT, type: type, data: data }, _msgTargetOrigin);
+    }
+
+    // rAF 节流：同一 key 在一帧内只发送最后一次，避免滑块拖动时高频 postMessage 淹没 MAIN world
+    var _rafPending = {};
+    function sendToMainRaf(type, data, key) {
+        key = key || type;
+        if (_rafPending[key]) cancelAnimationFrame(_rafPending[key]);
+        _rafPending[key] = requestAnimationFrame(function() {
+            _rafPending[key] = null;
+            sendToMain(type, data);
+        });
     }
 
     function saveSettingsToStorage(settings) {
@@ -1072,11 +1132,11 @@ return new Promise(function(resolve) {
                 var val = parseFloat(this.value);
                 var isInd = currentSettings && currentSettings.channelMode === 'independent';
                 if (isInd) {
-                    if (channelEditTarget === 'right') { if (currentSettings) currentSettings.rightGains[idx] = val; sendToMain('set-channel-gains', { channel: 'right', gains: currentSettings.rightGains }); }
-                    else { if (currentSettings) currentSettings.leftGains[idx] = val; sendToMain('set-channel-gains', { channel: 'left', gains: currentSettings.leftGains }); }
+                    if (channelEditTarget === 'right') { if (currentSettings) currentSettings.rightGains[idx] = val; sendToMainRaf('set-channel-gains', { channel: 'right', gains: currentSettings.rightGains }, 'set-channel-gains-right'); }
+                    else { if (currentSettings) currentSettings.leftGains[idx] = val; sendToMainRaf('set-channel-gains', { channel: 'left', gains: currentSettings.leftGains }, 'set-channel-gains-left'); }
                 } else {
                     if (currentSettings) currentSettings.gains[idx] = val;
-                    sendToMain('set-gain', { index: idx, gain: val });
+                    sendToMainRaf('set-gain', { index: idx, gain: val }, 'set-gain-' + idx);
                 }
                 var valSpan = this.parentElement.querySelector('.eq-band-val');
                 if (valSpan) valSpan.textContent = val.toFixed(1);
@@ -1208,7 +1268,7 @@ return new Promise(function(resolve) {
                 var effect = this.dataset.effect;
                 var val = parseFloat(this.value);
                 if (currentSettings && currentSettings.effects) currentSettings.effects[effect] = val;
-                sendToMain('set-effect', { effect: effect, value: val });
+                sendToMainRaf('set-effect', { effect: effect, value: val }, 'set-effect-' + effect);
                 var valSpan = this.parentElement.querySelector('.eq-value');
                 if (valSpan) valSpan.textContent = val;
                 debounce('save-effect-' + effect, function() { saveSettingsToStorage(currentSettings); }, 300);
@@ -1268,7 +1328,7 @@ return new Promise(function(resolve) {
                 var dynEQ = currentSettings ? Object.assign({}, currentSettings.dynamicEQ) : Object.assign({}, DYNAMIC_EQ_DEFAULT);
                 dynEQ[param] = val;
                 if (currentSettings) currentSettings.dynamicEQ = dynEQ;
-                sendToMain('set-dynamic-eq', { dynamicEQ: dynEQ });
+                sendToMainRaf('set-dynamic-eq', { dynamicEQ: dynEQ }, 'set-dynamic-eq');
                 var valSpan = this.parentElement.querySelector('.eq-value');
                 if (valSpan) {
                     if (param === 'threshold') valSpan.textContent = val + 'dB';
@@ -1299,7 +1359,7 @@ return new Promise(function(resolve) {
                 var val = parseFloat(this.value);
                 var channel = param === 'mid-boost' ? 'mid' : 'side';
                 var gains = Array(31).fill(val);
-                sendToMain('set-channel-gains', { channel: channel, gains: gains });
+                sendToMainRaf('set-channel-gains', { channel: channel, gains: gains }, 'set-channel-gains-' + channel);
                 var valSpan = this.parentElement.querySelector('.eq-value');
                 if (valSpan) valSpan.textContent = val + 'dB';
             });
@@ -1331,6 +1391,14 @@ return new Promise(function(resolve) {
                 sendToMain('match-reference', {});
                 showToast('正在匹配参考频响...');
                 matchBtn.disabled = true;
+                var matchTimeout = setTimeout(function() {
+                    var btn = $id('eq-match-ref-btn');
+                    if (btn && btn.disabled) {
+                        btn.disabled = false;
+                        showToast('匹配超时，请重试');
+                    }
+                }, 8000);
+                matchBtn._moekoeMatchTimeout = matchTimeout;
             });
         }
 
@@ -1352,7 +1420,7 @@ return new Promise(function(resolve) {
                 var effect = this.dataset.effect;
                 var val = parseFloat(this.value);
                 if (currentSettings && currentSettings.effects) currentSettings.effects[effect] = val;
-                sendToMain('set-effect', { effect: effect, value: val });
+                sendToMainRaf('set-effect', { effect: effect, value: val }, 'set-effect-' + effect);
                 safeRuntimeMessage({ action: 'set-effect', effect: effect, value: val });
                 var valSpan = this.parentElement.querySelector('.eq-value');
                 if (valSpan) valSpan.textContent = val;
@@ -1677,6 +1745,7 @@ createPanel();
 
     window.addEventListener('message', function(event) {
         if (event.source !== window) return;
+        if (event.origin !== window.location.origin) return;
         var data = event.data;
         if (!data) return;
 
@@ -1770,10 +1839,22 @@ createPanel();
                     }
                     break;
                 case 'match-reference-complete':
-                    showToast('已匹配参考频响');
-                    var matBtn = $id('eq-match-ref-btn');
-                    if (matBtn) matBtn.disabled = false;
-                    loadSettingsFromStorage().then(function() { renderTabContent(); });
+                    var matBtn0 = $id('eq-match-ref-btn');
+                    if (matBtn0 && matBtn0._moekoeMatchTimeout) {
+                        clearTimeout(matBtn0._moekoeMatchTimeout);
+                        matBtn0._moekoeMatchTimeout = null;
+                    }
+                    if (data.data && data.data.success === false) {
+                        var errMsg = '匹配失败';
+                        if (data.data.error === 'sample_rate_mismatch') errMsg = '匹配失败：采样率不匹配，请重新捕获参考';
+                        else if (data.data.error === 'no_valid_audio') errMsg = '匹配失败：未检测到有效音频';
+                        showToast(errMsg);
+                        if (matBtn0) matBtn0.disabled = false;
+                    } else {
+                        showToast('已匹配参考频响');
+                        if (matBtn0) matBtn0.disabled = false;
+                        loadSettingsFromStorage().then(function() { renderTabContent(); });
+                    }
                     break;
             }
         }
@@ -1894,9 +1975,23 @@ createPanel();
         return false;
     }
 
+    function isMvWindow() {
+        var hash = window.location.hash || '';
+        if (hash.indexOf('mv') >= 0 || hash.indexOf('MV') >= 0 || hash.indexOf('/mv') >= 0) return true;
+        var pathname = window.location.pathname || '';
+        if (pathname.indexOf('/mv') >= 0 || pathname.indexOf('/video') >= 0) return true;
+        if (document.title && (document.title.toLowerCase().indexOf('mv') >= 0 || document.title.indexOf('视频') >= 0)) return true;
+        if (window.location.href.indexOf('moekoe://') === 0 && window.location.href.indexOf('mv') >= 0) return true;
+        return false;
+    }
+
     function init() {
         if (isDesktopLyricsWindow()) {
             console.log('[MoeKoeEQ-CT] Desktop lyrics window detected, skipping EQ UI initialization');
+            return;
+        }
+        if (isMvWindow()) {
+            console.log('[MoeKoeEQ-CT] MV window detected, skipping EQ UI initialization');
             return;
         }
 
