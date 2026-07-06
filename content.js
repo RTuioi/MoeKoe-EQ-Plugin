@@ -669,32 +669,29 @@ window.postMessage({ source: MSG_SRC.CONTENT, type: type, data: data }, _msgTarg
     function loadSettingsFromStorage() {
 return new Promise(function(resolve) {
             if (!isExtensionContextValid()) {
-                currentSettings = buildDefaultSettingsLocal();
-                resolve(currentSettings);
+                resolve(buildDefaultSettingsLocal()); // 不设置 currentSettings，避免默认值被持久化
                 return;
             }
             var resolved = false;
             var timer = setTimeout(function() {
                 if (!resolved) {
                     resolved = true;
-                    currentSettings = buildDefaultSettingsLocal();
-                    resolve(currentSettings);
+                    resolve(buildDefaultSettingsLocal()); // 超时不设置 currentSettings
                 }
-            }, 2000);
+            }, 5000);
 
             safeRuntimeMessage({ action: 'get-settings' }, function(response) {
                 clearTimeout(timer);
                 if (resolved) return;
                 resolved = true;
                 if (response && response.success && response.settings) {
-                    currentSettings = response.settings;
+                    currentSettings = response.settings; // 只在成功读取时设置
                     if (response.settings.customPresets) {
                         customPresets = response.settings.customPresets;
                     }
                     resolve(response.settings);
                 } else {
-                    currentSettings = buildDefaultSettingsLocal();
-                    resolve(currentSettings);
+                    resolve(buildDefaultSettingsLocal()); // 失败不设置 currentSettings
                 }
             });
         });
@@ -1756,13 +1753,21 @@ createPanel();
                         sendToMain('storage-settings', currentSettings);
                     } else {
                         loadSettingsFromStorage().then(function(s) {
-                            sendToMain('storage-settings', s);
+                            // 只在成功加载（currentSettings 被设置）时推送，避免默认值覆盖
+                            if (currentSettings) {
+                                sendToMain('storage-settings', s);
+                            }
                         });
                     }
                     break;
                 case 'state-change':
                 case 'state-response':
                     if (data.data) {
+                        if (!currentSettings) {
+                            // 还没从 storage 加载真实设置，不处理 state-change
+                            // 避免 inject.js 启动时的默认值（preset='flat'）覆盖 storage 中的真实设置
+                            break;
+                        }
                         if (data.version && data.version <= lastStateVersion) {
                             break;
                         }
@@ -2008,6 +2013,12 @@ createPanel();
         eqBtnObserver.observe(document.body, { childList: true, subtree: true });
 
         loadSettingsFromStorage().then(function(settings) {
+            if (!currentSettings) {
+                // 加载失败（超时/扩展上下文无效），不推送默认值，避免覆盖 inject.js 的真实设置
+                // inject.js 保持默认状态，等用户操作或下次 request-settings 时重试
+                sendToMain('get-state', {});
+                return;
+            }
             if (settings.pluginDisabled) {
                 if (eqButton) eqButton.style.display = 'none';
                 return;
