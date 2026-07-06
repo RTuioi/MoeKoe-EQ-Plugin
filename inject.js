@@ -254,6 +254,13 @@
         var threshold = Math.pow(10, thresholdDB / 20);
         var ceiling = Math.pow(10, ceilingDB / 20);
         var range = 1 - threshold;
+        // 保护：threshold >= 1 时恒等曲线（无非线性区域）
+        if (range <= 0) {
+            for (var j = 0; j < size; j++) {
+                curve[j] = (j / (size - 1)) * 2 - 1;
+            }
+            return curve;
+        }
         for (var i = 0; i < size; i++) {
             var x = (i / (size - 1)) * 2 - 1; // -1..1
             var absX = Math.abs(x);
@@ -531,6 +538,10 @@ eqInputNode.connect(channelSplitter);
 
     function insertLinearPhaseConvolver() {
         if (!audioContext || !eqInputNode) return;
+        if (midSideEnabled) {
+            console.warn('[MoeKoeEQ-MAIN] 线性相位与 M/S 模式不兼容（卷积会破坏 M/S 解码），跳过线性相位插入');
+            return;
+        }
         try {
             var activeGains = getActiveGainsForLinearPhase();
             var impulse = generateLinearPhaseImpulse(activeGains);
@@ -953,7 +964,7 @@ try {
             truePeakOversampler.curve = null; // 由 applyTruePeakConfig 设置
             truePeakCompressor.threshold.value = TRUE_PEAK_LIMITER_DEFAULT.threshold;
             truePeakCompressor.knee.value = 0;
-            truePeakCompressor.ratio.value = 1000; // 硬限幅
+            truePeakCompressor.ratio.value = 20; // 浏览器上限 20，达硬限幅效果
             truePeakCompressor.attack.value = 0.001;
             truePeakCompressor.release.value = TRUE_PEAK_LIMITER_DEFAULT.release;
             truePeakCeilingGain.gain.value = 1.0;
@@ -1089,9 +1100,11 @@ analyserInput = audioContext.createAnalyser();
         return currentGains;
     }
 
+    var LINEAR_PHASE_FFT_SIZE = 4096;
+
     function generateLinearPhaseImpulse(gains) {
         if (!audioContext) return null;
-        var fftSize = 8192;
+        var fftSize = LINEAR_PHASE_FFT_SIZE;
         var real = new Float32Array(fftSize);
         var imag = new Float32Array(fftSize);
         var sampleRate = audioContext.sampleRate;
@@ -1134,26 +1147,26 @@ analyserInput = audioContext.createAnalyser();
         var maxAmp = 0;
         var rmsSum = 0;
         var halfLen = halfFFT;
+        var taperLen = Math.min(64, Math.floor(fftSize * 0.01));
+        var channelData0 = impulse.getChannelData(0);
+        var channelData1 = impulse.getChannelData(1);
 
-        for (var ch = 0; ch < 2; ch++) {
-            var channelData = impulse.getChannelData(ch);
-            for (var i = 0; i < fftSize; i++) {
-                var srcIdx = (i + halfLen) % fftSize;
-                var val = realCopy[srcIdx];
-                var taperLen = Math.min(64, Math.floor(fftSize * 0.01));
-                if (i < taperLen) {
-                    val *= 0.5 * (1 - Math.cos(Math.PI * i / taperLen));
-                } else if (i >= fftSize - taperLen) {
-                    val *= 0.5 * (1 - Math.cos(Math.PI * (fftSize - 1 - i) / taperLen));
-                }
-                channelData[i] = val;
-                var absVal = Math.abs(val);
-                if (absVal > maxAmp) maxAmp = absVal;
-                rmsSum += val * val;
+        for (var i = 0; i < fftSize; i++) {
+            var srcIdx = (i + halfLen) % fftSize;
+            var val = realCopy[srcIdx];
+            if (i < taperLen) {
+                val *= 0.5 * (1 - Math.cos(Math.PI * i / taperLen));
+            } else if (i >= fftSize - taperLen) {
+                val *= 0.5 * (1 - Math.cos(Math.PI * (fftSize - 1 - i) / taperLen));
             }
+            channelData0[i] = val;
+            channelData1[i] = val;
+            var absVal = Math.abs(val);
+            if (absVal > maxAmp) maxAmp = absVal;
+            rmsSum += val * val;
         }
 
-        var rms = Math.sqrt(rmsSum / (fftSize * 2));
+        var rms = Math.sqrt(rmsSum / fftSize);
         impulse._moekoePeakAmplitude = maxAmp > 0.001 ? maxAmp : 1.0;
         impulse._moekoeRMS = rms > 0.0001 ? rms : 1.0;
 
@@ -1166,6 +1179,11 @@ analyserInput = audioContext.createAnalyser();
     var interceptInstalled = false;
     var interceptConnectFlag = true;
     var _interceptHasSource = false;
+    var _origCreateMES = null;
+    var _origConnect = null;
+    var _origAudioCtor = null;
+    var _origWindowAudio = null;
+    var _interceptInstalledOn = null;
 
     function installCreateMediaElementSourceIntercept() {
         if (interceptInstalled) return;
@@ -1174,14 +1192,15 @@ analyserInput = audioContext.createAnalyser();
 var OrigAudioContext = window.AudioContext || window.webkitAudioContext;
         if (!OrigAudioContext) return;
 
-        var origCreateMES = OrigAudioContext.prototype.createMediaElementSource;
+        _origCreateMES = OrigAudioContext.prototype.createMediaElementSource;
+        _origAudioCtor = OrigAudioContext;
 
         OrigAudioContext.prototype.createMediaElementSource = function(audioElement) {
             var sourceNode;
             // 检测 audio 元素是否已被插件接管（fallbackConnect 已调用过 createMediaElementSource）
             var alreadyCaptured = (capturedAudioElement === audioElement && isInitialized);
             try {
-                sourceNode = origCreateMES.call(this, audioElement);
+                sourceNode = _origCreateMES.call(this, audioElement);
             } catch (e) {
                 if (alreadyCaptured) {
                     // audio 已被 EQ 插件接管，主程序（如响度规格化）再次调用会抛 InvalidStateError
@@ -1243,6 +1262,8 @@ setTimeout(function() {
         };
 
         var origConnect = AudioNode.prototype.connect;
+        _origConnect = origConnect;
+        _interceptInstalledOn = AudioNode;
 
         AudioNode.prototype.connect = function(destination) {
             var result = origConnect.apply(this, arguments);
@@ -1609,7 +1630,7 @@ try {
                     for (var s = 0; s < nodeSets.length; s++) {
                         var nodes = activeNodes[nodeSets[s]];
                         if (nodes && nodes[b]) {
-                            nodes[b].gain.setValueAtTime(targetGainDB, currentTime);
+                            nodes[b].gain.setTargetAtTime(targetGainDB, currentTime, 0.03);
                         }
                     }
                 }
@@ -1646,21 +1667,11 @@ if (dynamicEQFrameId) {
         var clamped = Math.max(GAIN_MIN, Math.min(GAIN_MAX, gainDB));
         currentGains[bandIndex] = clamped;
         if (!dynamicEQConfig.enabled && audioContext) {
-            if (midSideEnabled) {
-                midGains[bandIndex] = clamped;
-                sideGains[bandIndex] = clamped;
-                updateEQNodeGains(midEQNodes, midGains);
-                updateEQNodeGains(sideEQNodes, sideGains);
-            } else if (channelMode === 'independent') {
-                leftGains[bandIndex] = clamped;
-                rightGains[bandIndex] = clamped;
-                updateEQNodeGains(leftEQNodes, leftGains);
-                updateEQNodeGains(rightEQNodes, rightGains);
-            } else {
+            if (channelMode === 'stereo' && !midSideEnabled) {
                 updateEQNodeGains(eqNodes, currentGains);
             }
         }
-        if (linearPhaseEnabled) updateLinearPhase();
+        if (linearPhaseEnabled && channelMode === 'stereo' && !midSideEnabled) updateLinearPhase();
         notifyStateChange();
     }
 
@@ -1670,25 +1681,11 @@ if (dynamicEQFrameId) {
             currentGains[i] = Math.max(GAIN_MIN, Math.min(GAIN_MAX, gains[i]));
         }
         if (!dynamicEQConfig.enabled && audioContext) {
-            if (midSideEnabled) {
-                for (var i = 0; i < 31; i++) {
-                    midGains[i] = currentGains[i];
-                    sideGains[i] = currentGains[i];
-                }
-                updateEQNodeGains(midEQNodes, midGains);
-                updateEQNodeGains(sideEQNodes, sideGains);
-            } else if (channelMode === 'independent') {
-                for (var i = 0; i < 31; i++) {
-                    leftGains[i] = currentGains[i];
-                    rightGains[i] = currentGains[i];
-                }
-                updateEQNodeGains(leftEQNodes, leftGains);
-                updateEQNodeGains(rightEQNodes, rightGains);
-            } else {
+            if (channelMode === 'stereo' && !midSideEnabled) {
                 updateEQNodeGains(eqNodes, currentGains);
             }
         }
-        if (linearPhaseEnabled) updateLinearPhase();
+        if (linearPhaseEnabled && channelMode === 'stereo' && !midSideEnabled) updateLinearPhase();
         notifyStateChange();
     }
 
@@ -1930,6 +1927,13 @@ linearPhaseEnabled = enabled;
         var threshold = truePeakLimiterConfig.threshold != null ? truePeakLimiterConfig.threshold : TRUE_PEAK_LIMITER_DEFAULT.threshold;
         var ceiling = truePeakLimiterConfig.ceiling != null ? truePeakLimiterConfig.ceiling : TRUE_PEAK_LIMITER_DEFAULT.ceiling;
         var release = truePeakLimiterConfig.release != null ? truePeakLimiterConfig.release : TRUE_PEAK_LIMITER_DEFAULT.release;
+        // 安全保护：钳制到合理范围，防止极端值导致近静音或曲线异常
+        // threshold/ceiling 必须在 [-12, 0] dB 内，且 threshold <= ceiling
+        if (!isFinite(threshold) || threshold < -12) threshold = -12;
+        if (threshold > 0) threshold = 0;
+        if (!isFinite(ceiling) || ceiling < -12) ceiling = -12;
+        if (ceiling > 0) ceiling = 0;
+        if (threshold > ceiling) threshold = ceiling;
         if (enabled) {
             // 软限幅曲线：threshold 以下恒等，threshold-ceiling 之间平滑过渡，ceiling 硬上限
             var curve = createTruePeakCurve(threshold, ceiling);
@@ -1940,7 +1944,7 @@ linearPhaseEnabled = enabled;
             if (truePeakCompressor) {
                 truePeakCompressor.threshold.value = threshold;
                 truePeakCompressor.knee.value = 0;
-                truePeakCompressor.ratio.value = 1000; // 硬限幅（兜底）
+                truePeakCompressor.ratio.value = 20; // 浏览器上限 20，硬限幅兜底
                 truePeakCompressor.attack.value = 0.001;
                 truePeakCompressor.release.value = release;
             }
@@ -2297,6 +2301,16 @@ var preset = null;
 
     function matchReferenceProfile() {
         if (!referenceProfile || !analyserOutput || !audioContext) return null;
+        if (referenceProfile.sampleRate !== audioContext.sampleRate ||
+            referenceProfile.fftSize !== analyserOutput.fftSize) {
+            console.warn('[MoeKoeEQ-MAIN] matchReferenceProfile: 采样率或 FFT 大小不匹配', referenceProfile.sampleRate, audioContext.sampleRate);
+            window.postMessage({
+                source: MSG_SRC.MAIN,
+                type: 'match-reference-complete',
+                data: { success: false, error: 'sample_rate_mismatch' }
+            }, _msgTargetOrigin);
+            return null;
+        }
         var avgCurrent = new Float32Array(analyserOutput.frequencyBinCount);
         var sampleCount = 30;
         var captured = 0;
@@ -2354,42 +2368,13 @@ var preset = null;
     }
 
     function loadSettings() {
+        // 不再从 localStorage 读取：__moekoe_eq_main_settings 已废弃，
+        // 真实设置由 content.js 通过 chrome.storage.local 推送（applySettingsFromStorage）。
+        // 启动时使用模块默认值（flat / 无效果），content.js 推送后立即覆盖。
+        // 一次性清理陈旧 key，避免旧版本数据残留导致 preset 跳回 bug。
         try {
-            var saved = localStorage.getItem('__moekoe_eq_main_settings');
-            if (saved) {
-var s = JSON.parse(saved);
-                isEnabled = s.enabled !== false;
-                currentGains = s.gains || Array(31).fill(0);
-                currentQValues = s.qValues || Array(31).fill(Q_VALUE_DEFAULT);
-                currentPreset = s.preset || 'flat';
-                currentEffects = Object.assign({}, AUDIO_EFFECTS_DEFAULT, s.effects || {});
-                effectsEnabled = s.effectsEnabled !== false;
-                pluginDisabled = s.pluginDisabled || false;
-                channelMode = CHANNEL_MODES.indexOf(s.channelMode) >= 0 ? s.channelMode : 'stereo';
-                leftGains = s.leftGains || Array(31).fill(0);
-                rightGains = s.rightGains || Array(31).fill(0);
-                leftQValues = s.leftQValues || Array(31).fill(Q_VALUE_DEFAULT);
-                rightQValues = s.rightQValues || Array(31).fill(Q_VALUE_DEFAULT);
-                dynamicEQConfig = Object.assign({}, DYNAMIC_EQ_DEFAULT, s.dynamicEQ || {});
-                midSideEnabled = s.midSideEnabled || false;
-                midGains = s.midGains || Array(31).fill(0);
-                sideGains = s.sideGains || Array(31).fill(0);
-                linearPhaseEnabled = s.linearPhaseEnabled || false;
-                referenceProfile = s.referenceProfile || null;
-                dcFilterConfig = Object.assign({}, DC_FILTER_DEFAULT, s.dcFilter || {});
-                ditherConfig = Object.assign({}, DITHER_DEFAULT, s.dither || {});
-                truePeakLimiterConfig = Object.assign({}, TRUE_PEAK_LIMITER_DEFAULT, s.truePeakLimiter || {});
-                if (referenceProfile && referenceProfile.downsampled && referenceProfile.originalLength) {
-                    var restored = new Array(referenceProfile.originalLength);
-                    var srcData = referenceProfile.frequencyData;
-                    for (var ri = 0; ri < referenceProfile.originalLength; ri++) {
-                        var srcIdx = Math.floor(ri / 4);
-                        restored[ri] = srcIdx < srcData.length ? srcData[srcIdx] : srcData[srcData.length - 1];
-                    }
-                    referenceProfile.frequencyData = restored;
-                    delete referenceProfile.downsampled;
-                    delete referenceProfile.originalLength;
-                }
+            if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem('__moekoe_eq_main_settings');
             }
         } catch (e) { /* ignore */ }
         requestSettingsFromContent();
@@ -2570,6 +2555,10 @@ var t = audioContext.currentTime;
             eqOutputNode.connect(analyserOutput);
 
             tryApplySettings();
+
+            if (dynamicEQConfig && dynamicEQConfig.enabled) {
+                connectDynamicEQ();
+            }
         } catch (e) {
             if (sourceNode !== oldSourceNode) {
                 try { sourceNode.disconnect(); } catch (e2) {}
@@ -2793,6 +2782,28 @@ var t = audioContext.currentTime;
 
         softCleanup();
         capturedAudioElement = null;
+
+        try {
+            if (_origCreateMES && _origAudioCtor) {
+                _origAudioCtor.prototype.createMediaElementSource = _origCreateMES;
+            }
+        } catch (e) {}
+        try {
+            if (_origConnect && _interceptInstalledOn) {
+                _interceptInstalledOn.prototype.connect = _origConnect;
+            }
+        } catch (e) {}
+        try {
+            if (_origWindowAudio) {
+                window.Audio = _origWindowAudio;
+            }
+        } catch (e) {}
+        _origCreateMES = null;
+        _origConnect = null;
+        _origAudioCtor = null;
+        _origWindowAudio = null;
+        _interceptInstalledOn = null;
+        interceptInstalled = false;
 }
 
     function findAndConnectAudioElement() {
@@ -2848,6 +2859,7 @@ var t = audioContext.currentTime;
     installCreateMediaElementSourceIntercept();
 
     var OrigAudio = window.Audio;
+    _origWindowAudio = OrigAudio;
     if (OrigAudio) {
         window.Audio = function(src) {
             var audio = new OrigAudio(src);
