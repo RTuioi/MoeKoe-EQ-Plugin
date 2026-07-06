@@ -22,7 +22,7 @@
         window.EQ_PRESETS = { flat:{name:'平坦',gains:Array(31).fill(0)} };
         window.AUDIO_EFFECTS_DEFAULT = {bassBoost:0,dynamicBass:0,warmth:0,vocalEnhance:0,presence:0,clarity:0,trebleBoost:0,dynamicEnhance:0,ambiance:0,surround:0,reverb:0,outputGain:50,stereoBalance:50,loudnessCompensation:0,harmonicExciter:0,crossfeed:0,subHarmonic:0,tubeSaturation:0,multibandComp:0,deEsser:0,stereoWidener:0,tapeEmulation:0,loudnessMaximizer:0};
         window.DYNAMIC_EQ_DEFAULT = {enabled:false,threshold:-30,ratio:6,attack:0.02,release:0.15};
-        window.LIMITER_DEFAULT = {threshold:-3,knee:10,ratio:8,attack:0.005,release:0.5};
+        window.LIMITER_DEFAULT = {threshold:-3,knee:0,ratio:4,attack:0.005,release:0.15};
         window.DC_FILTER_DEFAULT = {enabled:true,cutoffFreq:20,Q:0.707};
         window.TRUE_PEAK_LIMITER_DEFAULT = {enabled:true,threshold:-1.0,ceiling:-0.5,release:0.1,oversample:4};
         window.DITHER_DEFAULT = {enabled:false,targetBits:16,noiseShaping:true};
@@ -248,6 +248,7 @@
 
     // === 真峰值限幅器辅助函数 ===
     // 生成软限幅曲线（WaveShaper 用于真峰值限幅，配合 oversample 使用）
+    // 使用 cubic Hermite 插值保证阈值处 C1 连续，避免导数跳变产生的高频失真
     function createTruePeakCurve(thresholdDB, ceilingDB) {
         var size = 65536;
         var curve = new Float32Array(size);
@@ -261,6 +262,9 @@
             }
             return curve;
         }
+        // Hermite 基函数系数（在 t=0 处导数=range 匹配线性区，t=1 处导数=0 硬上限）
+        // shaped(t) = threshold * h00 + range * h10 + ceiling * h01
+        // h00 = 2t³ - 3t² + 1, h10 = t³ - 2t² + t, h01 = -2t³ + 3t²
         for (var i = 0; i < size; i++) {
             var x = (i / (size - 1)) * 2 - 1; // -1..1
             var absX = Math.abs(x);
@@ -269,10 +273,15 @@
                 // 线性区域
                 curve[i] = x;
             } else {
-                // 阈值以上：软饱和过渡到 ceiling
+                // 阈值以上：Hermite 插值过渡到 ceiling
                 var t = (absX - threshold) / range;
                 if (t > 1) t = 1;
-                var shaped = threshold + (ceiling - threshold) * (1 - Math.exp(-3 * t));
+                var t2 = t * t;
+                var t3 = t2 * t;
+                var h00 = 2 * t3 - 3 * t2 + 1;
+                var h10 = t3 - 2 * t2 + t;
+                var h01 = -2 * t3 + 3 * t2;
+                var shaped = threshold * h00 + range * h10 + ceiling * h01;
                 curve[i] = sign * Math.min(shaped, ceiling);
             }
         }
@@ -1022,8 +1031,8 @@ try {
             }
 
             N.loudnessMaxComp = audioContext.createDynamicsCompressor();
-            N.loudnessMaxComp.threshold.value = 0;
-            N.loudnessMaxComp.knee.value = 10;
+            N.loudnessMaxComp.threshold.value = 0; // 浏览器规定范围 [-100, 0]，0 为最高值（信号 < 0dB 不触发）
+            N.loudnessMaxComp.knee.value = 0;      // 硬拐点，无软压缩区域，配合 ratio=1 实现真正旁路
             N.loudnessMaxComp.ratio.value = 1;
             N.loudnessMaxComp.attack.value = 0.005;
             N.loudnessMaxComp.release.value = 0.05;
@@ -1956,6 +1965,7 @@ linearPhaseEnabled = enabled;
             // 禁用：oversampler 恒等 + 压缩器旁通 + 单位增益
             if (truePeakOversampler) {
                 truePeakOversampler.curve = null;
+                truePeakOversampler.oversample = 'none'; // 禁用时关闭过采样，避免不必要的处理
             }
             if (truePeakCompressor) {
                 truePeakCompressor.ratio.value = 1; // 旁通
@@ -2046,7 +2056,16 @@ currentEffects[effectName] = value;
                     if (N.tapeMix) N.tapeMix.gain.setValueAtTime(value / 100 * 0.5, t);
                     break;
                 case 'loudnessMaximizer':
-                    if (N.loudnessMaxComp) { N.loudnessMaxComp.threshold.setValueAtTime(-10 - (value / 100) * 20, t); N.loudnessMaxComp.ratio.setValueAtTime(1 + (value / 100) * 7, t); }
+                    if (N.loudnessMaxComp) {
+                        if (value <= 0) {
+                            // value=0 时完全旁路：threshold=0（浏览器上限）+ knee=0（硬拐点）+ ratio=1（不压缩）
+                            N.loudnessMaxComp.threshold.setValueAtTime(0, t);
+                            N.loudnessMaxComp.ratio.setValueAtTime(1, t);
+                        } else {
+                            N.loudnessMaxComp.threshold.setValueAtTime(-10 - (value / 100) * 20, t);
+                            N.loudnessMaxComp.ratio.setValueAtTime(1 + (value / 100) * 7, t);
+                        }
+                    }
                     if (N.loudnessMaxMakeupGain) N.loudnessMaxMakeupGain.gain.setValueAtTime(Math.pow(10, (value / 100) * 6 / 20), t);
                     break;
             }
@@ -2408,6 +2427,7 @@ var preset = null;
 
     function applySettingsFromStorage(s) {
         if (!s) return;
+        console.log('[MoeKoeEQ-MAIN] applySettingsFromStorage, preset:', s.preset, 'effectsEnabled:', s.effectsEnabled);
         _storageSettingsApplied = true;
         isEnabled = s.enabled !== false;
         currentGains = Array.isArray(s.gains) && s.gains.length === 31 ? s.gains : currentGains;
@@ -2460,7 +2480,11 @@ var t = audioContext.currentTime;
         updateEQNodeGains(sideEQNodes, sideGains);
 
         Object.keys(currentEffects).forEach(function(key) {
-            setEffect(key, currentEffects[key], true);
+            var val = currentEffects[key];
+            // loudnessMaxComp 在主信号链路中（不在 effects 旁路控制范围内），
+            // effectsEnabled=false 时强制旁路，避免预设的 loudnessMaximizer 配置触发压缩产生沙沙声
+            if (key === 'loudnessMaximizer' && !effectsEnabled) val = 0;
+            setEffect(key, val, true);
         });
 
         var hasActiveEffects = effectsEnabled && Object.keys(AUDIO_EFFECTS_DEFAULT).some(function(key) {
